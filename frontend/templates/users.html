@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block page_title %}Users{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Users</h1>
+    <p>System accounts and access control</p>
+  </div>
+  <div class="page-header-actions">
+    <button id="btn-add-user" class="btn btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add User
+    </button>
+  </div>
+</div>
+
+<div id="user-list">
+  <div class="page-loading"><div class="spinner"></div></div>
+</div>
+
+<!-- Add user modal -->
+<div id="modal-user" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add User</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-user">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="f-username">Username</label>
+          <input id="f-username" class="input" type="text" required
+                 placeholder="alice" autocomplete="off" spellcheck="false"
+                 pattern="[a-z_][a-z0-9_\-]{0,31}">
+          <span class="form-hint">Lowercase letters, digits, underscore, hyphen.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Groups</label>
+          <div class="d-flex gap-4 mt-1">
+            <label class="checkbox-group">
+              <input type="checkbox" class="f-group" value="sudo">
+              <label>sudo (admin)</label>
+            </label>
+            <label class="checkbox-group">
+              <input type="checkbox" class="f-group" value="samba">
+              <label>samba (shares)</label>
+            </label>
+          </div>
+        </div>
+
+        <!-- Advanced options -->
+        <div class="advanced-only" style="border-top:1px solid var(--card-border);padding-top:14px;margin-top:4px">
+          <div class="section-title" style="margin-bottom:10px">Advanced Options</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="f-shell">Shell</label>
+              <select id="f-shell" class="select">
+                <option value="/bin/bash">/bin/bash</option>
+                <option value="/bin/sh">/bin/sh</option>
+                <option value="/usr/bin/zsh">/usr/bin/zsh</option>
+                <option value="/usr/sbin/nologin">/usr/sbin/nologin</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="f-uid">UID (optional)</label>
+              <input id="f-uid" class="input" type="number" placeholder="1001" min="1000" max="65535">
+              <span class="form-hint">Leave blank to auto-assign</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="f-gid">GID (optional)</label>
+              <input id="f-gid" class="input" type="number" placeholder="1001" min="1000" max="65535">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-user-submit" class="btn btn-primary">Create User</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/users.js"></script>
+{% endblock %}

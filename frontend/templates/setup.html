@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Setup — FreedomNAS</title>
+  <link rel="icon" type="image/png" href="/static/img/logo_cut.png">
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+
+<div class="wizard-wrap">
+  <div class="wizard-card">
+    <div class="wizard-header">
+      <img src="/static/img/logo_cut.png" alt="FreedomNAS" width="40" height="40">
+      <div class="wizard-header-text">
+        <h1>First-Time Setup</h1>
+        <p>Configure your FreedomNAS system</p>
+      </div>
+    </div>
+
+    <div class="wizard-steps">
+      <div class="wizard-step active" data-step="1">
+        <div class="wizard-step-num">1</div>
+        <span>Identity</span>
+      </div>
+      <div class="wizard-step-divider"></div>
+      <div class="wizard-step" data-step="2">
+        <div class="wizard-step-num">2</div>
+        <span>Edition</span>
+      </div>
+      <div class="wizard-step-divider"></div>
+      <div class="wizard-step" data-step="3">
+        <div class="wizard-step-num">3</div>
+        <span>Review</span>
+      </div>
+    </div>
+
+    <!-- Step 1 -->
+    <div id="step-1" class="wizard-body">
+      <div class="form-group">
+        <label class="form-label" for="f-hostname">Hostname</label>
+        <input id="f-hostname" class="input" type="text" value="freedomnas"
+               placeholder="freedomnas" spellcheck="false" autocomplete="off">
+        <span class="form-hint">Short name for this system. Letters, digits, and hyphens only.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-timezone">Timezone</label>
+        <input id="f-timezone" class="input" type="text" value="UTC"
+               placeholder="Europe/Rome" list="tz-list">
+        <datalist id="tz-list">
+          <option value="UTC"><option value="Europe/Rome"><option value="Europe/London">
+          <option value="Europe/Berlin"><option value="Europe/Paris"><option value="America/New_York">
+          <option value="America/Los_Angeles"><option value="America/Chicago"><option value="Asia/Tokyo">
+          <option value="Asia/Shanghai"><option value="Australia/Sydney">
+        </datalist>
+        <span class="form-hint">IANA timezone identifier (e.g. Europe/Rome)</span>
+      </div>
+    </div>
+    <div class="wizard-footer" id="footer-1">
+      <button id="btn-next-1" class="btn btn-primary">Continue</button>
+    </div>
+
+    <!-- Step 2 -->
+    <div id="step-2" class="wizard-body" hidden>
+      <div class="form-group">
+        <label class="form-label" for="f-edition">Operating System Edition</label>
+        <select id="f-edition" class="select">
+          <option value="">— Select edition —</option>
+          <option value="debian">Debian</option>
+          <option value="freebsd">FreeBSD</option>
+          <option value="arch">Arch Linux</option>
+        </select>
+        <span class="form-hint">Choose the edition matching the OS this system runs.</span>
+      </div>
+      <div class="alert alert-info" style="margin-top:4px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>This selection determines which system commands FreedomNAS uses. It cannot be changed without re-running setup.</span>
+      </div>
+    </div>
+    <div class="wizard-footer" id="footer-2" hidden>
+      <button id="btn-back-2" class="btn btn-secondary">Back</button>
+      <button id="btn-next-2" class="btn btn-primary">Review</button>
+    </div>
+
+    <!-- Step 3 — Review -->
+    <div id="step-3" class="wizard-body" hidden>
+      <div class="card" style="padding:16px">
+        <table style="width:100%;font-size:0.875rem">
+          <tbody>
+            <tr><td class="text-muted" style="padding:6px 0;width:120px">Hostname</td><td id="summary-hostname" class="font-bold"></td></tr>
+            <tr><td class="text-muted" style="padding:6px 0">Timezone</td><td id="summary-timezone"></td></tr>
+            <tr><td class="text-muted" style="padding:6px 0">Edition</td><td id="summary-edition"></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p id="init-error" class="text-err text-sm" hidden></p>
+    </div>
+    <div class="wizard-footer" id="footer-3" hidden>
+      <button id="btn-back-3" class="btn btn-secondary">Back</button>
+      <button id="btn-initialize" class="btn btn-primary">Initialize System</button>
+    </div>
+
+    <!-- Done -->
+    <div id="step-done" class="wizard-body" hidden style="text-align:center;padding:40px 28px">
+      <div style="font-size:2.5rem;margin-bottom:12px">✓</div>
+      <h2 style="color:var(--ok)">System initialized</h2>
+      <p class="text-muted mt-2" style="font-size:0.875rem">FreedomNAS is ready. Sign in to continue.</p>
+      <button id="btn-go-auth" class="btn btn-primary mt-6">Sign In</button>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast-stack"></div>
+<script src="/static/js/setup.js"></script>
+</body>
+</html>

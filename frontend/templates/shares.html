@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Shares{% endblock %}
+{% block page_title %}Shares{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Shares</h1>
+    <p>Samba (SMB/CIFS) and NFS network shares</p>
+  </div>
+  <div class="page-header-actions">
+    <button id="btn-add-share" class="btn btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add Share
+    </button>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="smb">SMB / CIFS</button>
+  <button class="tab-btn" data-tab="nfs">NFS</button>
+</div>
+
+<div id="panel-smb" class="tab-panel active"></div>
+<div id="panel-nfs" class="tab-panel"></div>
+
+<!-- Add share modal -->
+<div id="modal-share" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add <span id="modal-title-type">SMB</span> Share</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-share">
+      <input type="hidden" id="f-share-type" value="smb">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="f-share-name">Share Name</label>
+          <input id="f-share-name" class="input" type="text" required
+                 placeholder="Media" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="f-share-path">Directory Path</label>
+          <input id="f-share-path" class="input" type="text" required
+                 placeholder="/mnt/datapool/media" autocomplete="off" spellcheck="false">
+        </div>
+        <!-- SMB only -->
+        <div class="smb-only">
+          <label class="checkbox-group">
+            <input type="checkbox" id="f-share-ro">
+            <label for="f-share-ro">Read-only share</label>
+          </label>
+        </div>
+        <!-- NFS only -->
+        <div class="nfs-only" hidden>
+          <div class="form-group">
+            <label class="form-label" for="f-nfs-hosts">Allowed Hosts</label>
+            <input id="f-nfs-hosts" class="input" type="text"
+                   placeholder="192.168.1.0/24" autocomplete="off">
+            <span class="form-hint">IP, CIDR, or hostname that may mount this export</span>
+          </div>
+          <div class="form-group advanced-only">
+            <label class="form-label" for="f-nfs-options">Export Options</label>
+            <input id="f-nfs-options" class="input" type="text"
+                   placeholder="rw,sync,no_subtree_check">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-share-submit" class="btn btn-primary">Create Share</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/shares.js"></script>
+{% endblock %}

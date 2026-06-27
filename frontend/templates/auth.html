@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign In — FreedomNAS</title>
+  <link rel="icon" type="image/png" href="/static/img/logo_cut.png">
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <img src="/static/img/logo_cut.png" alt="FreedomNAS logo" width="72" height="72">
+      <img src="/static/img/logo.png" alt="FreedomNAS" style="height:28px;width:auto;margin-top:4px">
+      <p>Sign in to continue</p>
+    </div>
+
+    <form id="auth-form" class="auth-form" autocomplete="on" novalidate>
+      <div class="form-group">
+        <label class="form-label" for="field-user">Username</label>
+        <input id="field-user" class="input" type="text" name="username"
+               autocomplete="username" required placeholder="admin" spellcheck="false">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="field-pass">Password</label>
+        <input id="field-pass" class="input" type="password" name="password"
+               autocomplete="current-password" required>
+      </div>
+
+      <div id="auth-error" class="alert alert-err" role="alert" hidden></div>
+
+      <button id="btn-login" type="submit" class="btn btn-primary w-full" style="margin-top:4px">
+        Sign In
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      FreedomNAS — Network Attached Storage
+    </div>
+  </div>
+</div>
+
+<div id="toast-stack"></div>
+
+<script src="/static/js/auth.js"></script>
+</body>
+</html>

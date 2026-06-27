@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block page_title %}Updates{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>System Updates</h1>
+    <p>Manage and apply system package updates via Topgrade</p>
+  </div>
+  <div class="page-header-actions">
+    <button id="btn-configure" class="btn btn-secondary advanced-only">Configure</button>
+    <button id="btn-run-updates" class="btn btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polyline points="23 4 23 10 17 10"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      Run Updates
+    </button>
+  </div>
+</div>
+
+<!-- Status card -->
+<div class="card mb-6">
+  <div class="card-header">
+    <span class="card-title">Update Status</span>
+    <span id="update-msg" class="badge badge-muted">Checking…</span>
+  </div>
+  <div class="d-flex items-center gap-4">
+    <div>
+      <div style="font-size:2.5rem;font-weight:700;line-height:1" id="update-count">—</div>
+      <div class="text-muted text-sm mt-1">packages pending</div>
+    </div>
+    <div class="text-sm text-muted" style="border-left:1px solid var(--card-border);padding-left:20px">
+      <p>Updates are applied using <strong>Topgrade</strong>, which updates:</p>
+      <ul style="margin-top:6px;margin-left:16px;line-height:2">
+        <li>System packages</li>
+        <li>Docker / Podman containers</li>
+        <li>Firmware (if configured)</li>
+      </ul>
+      <p class="mt-3">A ZFS snapshot is created automatically before updates begin.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Terminal output (always shown when updates are running; visible in Expert mode always) -->
+<div id="terminal-wrap" hidden>
+  <div class="section-header mb-4">
+    <span class="section-title">Update Output</span>
+  </div>
+  <div class="terminal-wrap">
+    <div class="terminal-header">
+      <div class="terminal-dot terminal-dot-r"></div>
+      <div class="terminal-dot terminal-dot-y"></div>
+      <div class="terminal-dot terminal-dot-g"></div>
+      <span class="terminal-title">topgrade — system update</span>
+    </div>
+    <div class="terminal-body" id="terminal-body" aria-live="polite" aria-label="Update output"></div>
+  </div>
+</div>
+
+<!-- Expert: always show terminal placeholder -->
+<div class="expert-only" id="expert-terminal-hint" style="margin-top:16px">
+  <div class="alert alert-info">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    <span>Expert mode: terminal output will appear here when updates run. For live system access, use SSH.</span>
+  </div>
+</div>
+
+<!-- Configure modal (Advanced+) -->
+<div id="modal-configure" class="modal-backdrop advanced-only" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Configure Updates</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-configure">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Update Categories</label>
+          <div class="d-flex flex-col gap-3 mt-1">
+            <label class="checkbox-group">
+              <input type="checkbox" class="f-step" value="system" checked>
+              <label>System packages (apt / pkg / pacman)</label>
+            </label>
+            <label class="checkbox-group">
+              <input type="checkbox" class="f-step" value="containers" checked>
+              <label>Docker / Podman containers</label>
+            </label>
+            <label class="checkbox-group">
+              <input type="checkbox" class="f-step" value="firmware">
+              <label>Firmware (fwupd)</label>
+            </label>
+          </div>
+        </div>
+        <div class="form-group" style="border-top:1px solid var(--card-border);padding-top:14px">
+          <label class="checkbox-group">
+            <input type="checkbox" id="f-auto-snapshot" checked>
+            <label for="f-auto-snapshot">Create ZFS snapshot before updating</label>
+          </label>
+          <span class="form-hint" style="margin-left:23px">Recommended — allows rollback if update fails</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-cfg-submit" class="btn btn-primary">Save Configuration</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/updates.js"></script>
+{% endblock %}
