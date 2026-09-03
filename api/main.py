@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from api.deps import get_config
+from api.module_discovery import discover_community_modules
 from api.routes import network, setup, shares, storage, system, updates, users
 from websocket import terminal
 
@@ -34,7 +35,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FreedomNAS WebUI", version="0.2.0", lifespan=lifespan)
 
-templates = Jinja2Templates(directory="frontend/templates")
+# Community modules (nextcloud, docker, ...) ship their own api_routes.py +
+# frontend/ under modules/<id>/ — discovered here so mounting them never
+# requires editing this file. Core modules' routes/templates below are
+# untouched by this.
+_community_modules = discover_community_modules()
+
+templates = Jinja2Templates(
+    directory=[
+        "frontend/templates",
+        *(str(m.templates_dir) for m in _community_modules if m.templates_dir),
+    ]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +82,9 @@ app.include_router(updates.router, prefix="/api/updates", tags=["updates"])
 app.include_router(setup.router,   prefix="/api/setup",   tags=["setup"])
 app.include_router(terminal.router)
 
+for _mod in _community_modules:
+    app.include_router(_mod.router, prefix=_mod.route_prefix, tags=[_mod.id])
+
 
 # ---------------------------------------------------------------------------
 # Placeholder routes — planned for future phases (spec §7.8)
@@ -98,6 +113,14 @@ async def backup_placeholder(path: str = ""):
 # ---------------------------------------------------------------------------
 
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
+
+for _mod in _community_modules:
+    if _mod.static_dir:
+        app.mount(
+            f"/static/modules/{_mod.id}",
+            StaticFiles(directory=str(_mod.static_dir)),
+            name=f"static_{_mod.id}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -155,3 +178,20 @@ async def page_updates(request: Request):
 @app.get("/system/")
 async def page_system(request: Request):
     return templates.TemplateResponse("system.html", {"request": request})
+
+
+# ---------------------------------------------------------------------------
+# Community module pages — generic page route per module declaring
+# webui.page_route + webui.page_template in its manifest.json. Core module
+# pages above are registered by hand and untouched by this.
+# ---------------------------------------------------------------------------
+
+def _make_community_page(template_name: str):
+    async def _page(request: Request):
+        return templates.TemplateResponse(template_name, {"request": request})
+    return _page
+
+
+for _mod in _community_modules:
+    if _mod.page_route and _mod.page_template:
+        app.get(_mod.page_route)(_make_community_page(_mod.page_template))
