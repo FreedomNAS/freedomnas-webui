@@ -31,24 +31,40 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 });
 
+let _updatePoll = null;
+
 async function loadUpdateStatus() {
   try {
     const d = await apiJSON('GET', '/api/updates/status');
-    const count = d.pending_updates ?? 0;
 
     const countEl = document.getElementById('update-count');
-    if (countEl) countEl.textContent = count;
+    const msgEl   = document.getElementById('update-msg');
+    const known   = d.pending_updates !== null && d.pending_updates !== undefined;
 
-    const msgEl = document.getElementById('update-msg');
+    if (countEl) countEl.textContent = known ? d.pending_updates : '—';
+
     if (msgEl) {
-      if (count === 0) {
+      if (d.error && !known) {
+        msgEl.className = 'badge badge-err';
+        msgEl.textContent = 'Check failed';
+      } else if (!known) {
+        // The package manager can take minutes (Portage does); the count
+        // arrives on a later poll rather than holding the request open.
+        msgEl.className = 'badge badge-muted';
+        msgEl.textContent = 'Checking…';
+      } else if (d.pending_updates === 0) {
         msgEl.className = 'badge badge-ok';
         msgEl.textContent = 'System is up to date';
       } else {
         msgEl.className = 'badge badge-warn';
-        msgEl.textContent = `${count} package${count !== 1 ? 's' : ''} pending`;
+        msgEl.textContent = `${d.pending_updates} package${d.pending_updates !== 1 ? 's' : ''} pending`;
       }
+      if (known && d.refreshing) msgEl.textContent += ' (refreshing…)';
+      if (d.checked_at) msgEl.title = `Last checked: ${new Date(d.checked_at).toLocaleString()}`;
     }
+
+    if (_updatePoll) { clearTimeout(_updatePoll); _updatePoll = null; }
+    if (d.refreshing) _updatePoll = setTimeout(loadUpdateStatus, 5000);
 
     const snapEl = document.getElementById('f-auto-snapshot');
     if (snapEl) snapEl.checked = d.auto_snapshot !== false;

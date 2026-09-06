@@ -1,11 +1,21 @@
 """
 /api/updates/* — update management via Topgrade.
 
-GET  /status     — pending package count (from OS package manager)
+GET  /status     — last known pending package count, refreshed in background
 POST /configure  — write topgrade.toml and persist to config (once)
 
 Actual update execution happens via WebSocket at /ws/updates/terminal.
+
+Counting pending updates is not a quick question on every system: apt
+answers from its local lists in milliseconds, while Portage resolves the
+whole dependency graph and takes minutes. So /status never waits for it —
+it answers with the last known count and starts a refresh in the
+background when that count has gone stale.
 """
+
+import asyncio
+from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -18,18 +28,56 @@ router = APIRouter()
 
 DEFAULT_STEPS = ["system", "containers", "firmware"]
 
+# How long a count stays fresh, and how long the package manager gets to
+# produce one. Portage has been measured at ~4 minutes on a NAS-class box.
+CACHE_TTL = timedelta(hours=1)
+LIST_TIMEOUT_SECONDS = 900
+
+_pending: dict = {"count": None, "checked_at": None, "error": None}
+_refresh: Optional[asyncio.Task] = None
+
+
+def _count_pending_updates() -> int:
+    """
+    Blocking: runs the package manager. Every profile's
+    `packages.list_updatable` prints one line per pending update.
+    """
+    engine = get_engine()
+    stdout, _ = engine.execute(
+        "packages", "list_updatable", check=False, timeout=LIST_TIMEOUT_SECONDS
+    )
+    return len([line for line in stdout.splitlines() if line.strip()])
+
+
+async def _refresh_pending_updates() -> None:
+    try:
+        count = await asyncio.to_thread(_count_pending_updates)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        _pending["error"] = str(exc)
+        return
+    _pending.update(count=count, checked_at=datetime.now().isoformat(), error=None)
+
+
+def _is_stale() -> bool:
+    if _pending["checked_at"] is None:
+        return True
+    checked = datetime.fromisoformat(_pending["checked_at"])
+    return datetime.now() - checked > CACHE_TTL
+
 
 @router.get("/status")
 async def update_status(username: str = Depends(authenticate)):
-    engine = get_engine()
+    global _refresh
     config = get_config()
-    try:
-        stdout, _ = engine.execute("packages", "list_updatable", check=False)
-    except (CommandExecutionError, CommandTranslationError) as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
-    count = len([l for l in stdout.splitlines() if l.strip()])
+
+    if _is_stale() and (_refresh is None or _refresh.done()):
+        _refresh = asyncio.create_task(_refresh_pending_updates())
+
     return {
-        "pending_updates": count,
+        "pending_updates": _pending["count"],
+        "checked_at": _pending["checked_at"],
+        "refreshing": _refresh is not None and not _refresh.done(),
+        "error": _pending["error"],
         "topgrade_configured": config.is_topgrade_configured(),
         "auto_snapshot": config.get("updates.topgrade.auto_snapshot", True),
     }
