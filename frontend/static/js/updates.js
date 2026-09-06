@@ -90,6 +90,9 @@ function runUpdates() {
   _ws = new WebSocket(`${proto}://${location.host}/ws/updates/terminal`);
 
   _ws.onopen = () => {
+    // A WebSocket carries no Authorization header, so the same Basic blob the
+    // REST calls use goes in the opening frame. Nothing runs until it checks out.
+    _ws.send(JSON.stringify({ auth: Auth.get() }));
     appendLine(termEl, 'info', '▶ Update process started');
   };
 

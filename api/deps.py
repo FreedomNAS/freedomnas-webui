@@ -28,6 +28,17 @@ def get_config() -> ConfigurationManager:
     return _config
 
 
+def verify_credentials(username: str, password: str) -> bool:
+    """
+    Check a username and password against PAM.
+
+    Split out of authenticate() because the updates WebSocket needs the same
+    check: a browser cannot set an Authorization header on a WebSocket, so it
+    sends the same Basic blob as its first frame instead.
+    """
+    return bool(pam.pam().authenticate(username, password))
+
+
 def authenticate(
     credentials: HTTPBasicCredentials = Depends(security),
 ) -> str:
@@ -35,8 +46,7 @@ def authenticate(
     Verify credentials via PAM.  Returns the authenticated username.
     Raises HTTP 401 on failure.
     """
-    p = pam.pam()
-    if not p.authenticate(credentials.username, credentials.password):
+    if not verify_credentials(credentials.username, credentials.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",

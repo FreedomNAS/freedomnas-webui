@@ -1,6 +1,16 @@
 """
 /ws/updates/terminal — WebSocket endpoint that streams topgrade output.
 
+The client authenticates by sending {"auth": "<base64 user:password>"} as its
+first frame — the same Basic blob the REST calls carry, since a browser
+cannot set an Authorization header on a WebSocket. Nothing runs before that
+check passes: this endpoint starts a system update.
+
+The authenticated name is also what the update runs as. topgrade refuses to
+run as root by design — it calls sudo itself for the steps that need it — so
+the profile wraps it in `su - {username}`, and setup grants that user's group
+passwordless sudo.
+
 Behaviour (spec §7.7):
 - Command retrieved from engine profile via get_command("updates", "run_topgrade")
 - Pre-update snapshot taken if auto_snapshot is enabled
@@ -10,6 +20,8 @@ Behaviour (spec §7.7):
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import shlex
 from datetime import datetime
@@ -17,7 +29,9 @@ from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
-from api.deps import get_config, get_engine
+from api.deps import get_config, get_engine, verify_credentials
+
+AUTH_TIMEOUT_SECONDS = 10
 
 router = APIRouter()
 
@@ -26,14 +40,45 @@ async def _send(ws: WebSocket, stream: str, line: str) -> None:
     await ws.send_text(json.dumps({"stream": stream, "line": line}))
 
 
+async def _authenticate_socket(websocket: WebSocket):
+    """
+    Read the opening frame and check it against PAM.
+
+    Returns the username, or None once the socket has been closed.
+    """
+    try:
+        raw = await asyncio.wait_for(
+            websocket.receive_text(), timeout=AUTH_TIMEOUT_SECONDS
+        )
+        blob = json.loads(raw).get("auth", "")
+        username, _, password = base64.b64decode(blob).decode().partition(":")
+    except (asyncio.TimeoutError, json.JSONDecodeError, ValueError,
+            binascii.Error, UnicodeDecodeError):
+        await _send(websocket, "stderr", "Authentication required")
+        await websocket.close(code=4401)
+        return None
+
+    if not username or not verify_credentials(username, password):
+        await _send(websocket, "stderr", "Invalid credentials")
+        await websocket.close(code=4401)
+        return None
+
+    return username
+
+
 @router.websocket("/ws/updates/terminal")
 async def updates_terminal(websocket: WebSocket):
     await websocket.accept()
+
+    username = await _authenticate_socket(websocket)
+    if username is None:
+        return
+
     engine = get_engine()
     config = get_config()
 
     try:
-        command = engine.get_command("updates", "run_topgrade")
+        command = engine.get_command("updates", "run_topgrade", username=username)
     except CommandTranslationError as exc:
         await _send(websocket, "stderr", f"Profile error: {exc}")
         await websocket.close(code=1011)
