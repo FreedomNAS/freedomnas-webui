@@ -42,14 +42,12 @@
         <div class="form-group">
           <label class="form-label">Groups</label>
           <div class="d-flex gap-4 mt-1">
+            {% for group in assignable_groups %}
             <label class="checkbox-group">
-              <input type="checkbox" class="f-group" value="sudo">
-              <label>sudo (admin)</label>
+              <input type="checkbox" class="f-group" value="{{ group.name }}">
+              <label>{{ group.name }} ({{ group.purpose }})</label>
             </label>
-            <label class="checkbox-group">
-              <input type="checkbox" class="f-group" value="samba">
-              <label>samba (shares)</label>
-            </label>
+            {% endfor %}
           </div>
         </div>
 

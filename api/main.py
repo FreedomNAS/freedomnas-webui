@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from api.deps import get_config
+from api.deps import get_config, get_engine
+from freedomnas.engine import CommandTranslationError
 from api.module_discovery import discover_community_modules
 from api.routes import network, setup, shares, storage, system, updates, users
 from websocket import terminal
@@ -165,9 +166,32 @@ async def page_network(request: Request):
     return templates.TemplateResponse(request, "network.html")
 
 
+def _assignable_groups() -> list:
+    """
+    The groups the user form offers, named by the profile.
+
+    They are not called the same thing everywhere: administrators are in
+    `sudo` on Debian and in `wheel` on every other supported system, and only
+    Debian's samba package creates a group at all. Naming `sudo` in the
+    template made user creation fail on anything that is not Debian.
+    """
+    engine = get_engine()
+    groups = []
+    for key, purpose in (("sudo_group", "admin"), ("share_group", "shares")):
+        try:
+            name = engine.get_profile_value("users", key)
+        except CommandTranslationError:
+            continue
+        if name:
+            groups.append({"name": name, "purpose": purpose})
+    return groups
+
+
 @app.get("/users/")
 async def page_users(request: Request):
-    return templates.TemplateResponse(request, "users.html")
+    return templates.TemplateResponse(
+        request, "users.html", {"assignable_groups": _assignable_groups()}
+    )
 
 
 @app.get("/updates/")
