@@ -15,6 +15,8 @@ Behaviour (spec §7.7):
 - Command retrieved from engine profile via get_command("updates", "run_topgrade")
 - Pre-update snapshot taken if auto_snapshot is enabled
 - asyncio.create_subprocess_exec used (never subprocess.run, never shell=True)
+- stdin is /dev/null: nobody can answer a prompt here, so a command that
+  asks for one has to fail instead of hanging the page forever
 - Output streamed line-by-line as JSON: {"line": "...", "stream": "stdout"|"stderr"}
 - {"exit_code": N} sent as the final message when the process finishes
 """
@@ -107,6 +109,7 @@ async def updates_terminal(websocket: WebSocket):
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
