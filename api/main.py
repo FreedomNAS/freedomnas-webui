@@ -137,47 +137,47 @@ async def root():
 
 @app.get("/auth/")
 async def page_auth(request: Request):
-    return templates.TemplateResponse("auth.html", {"request": request})
+    return templates.TemplateResponse(request, "auth.html")
 
 
 @app.get("/setup/")
 async def page_setup(request: Request):
-    return templates.TemplateResponse("setup.html", {"request": request})
+    return templates.TemplateResponse(request, "setup.html")
 
 
 @app.get("/dashboard/")
 async def page_dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "dashboard.html")
 
 
 @app.get("/storage/")
 async def page_storage(request: Request):
-    return templates.TemplateResponse("storage.html", {"request": request})
+    return templates.TemplateResponse(request, "storage.html")
 
 
 @app.get("/shares/")
 async def page_shares(request: Request):
-    return templates.TemplateResponse("shares.html", {"request": request})
+    return templates.TemplateResponse(request, "shares.html")
 
 
 @app.get("/network/")
 async def page_network(request: Request):
-    return templates.TemplateResponse("network.html", {"request": request})
+    return templates.TemplateResponse(request, "network.html")
 
 
 @app.get("/users/")
 async def page_users(request: Request):
-    return templates.TemplateResponse("users.html", {"request": request})
+    return templates.TemplateResponse(request, "users.html")
 
 
 @app.get("/updates/")
 async def page_updates(request: Request):
-    return templates.TemplateResponse("updates.html", {"request": request})
+    return templates.TemplateResponse(request, "updates.html")
 
 
 @app.get("/system/")
 async def page_system(request: Request):
-    return templates.TemplateResponse("system.html", {"request": request})
+    return templates.TemplateResponse(request, "system.html")
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ async def page_system(request: Request):
 
 def _make_community_page(template_name: str):
     async def _page(request: Request):
-        return templates.TemplateResponse(template_name, {"request": request})
+        return templates.TemplateResponse(request, template_name)
     return _page
 
 
