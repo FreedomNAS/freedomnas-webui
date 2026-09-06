@@ -40,6 +40,19 @@
         </div>
 
         <div class="form-group">
+          <label class="form-label" for="f-password">Password</label>
+          <input id="f-password" class="input" type="password" required
+                 autocomplete="new-password" minlength="8">
+          <span class="form-hint">At least 8 characters. Required — the account cannot sign in without one.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-password2">Confirm password</label>
+          <input id="f-password2" class="input" type="password" required
+                 autocomplete="new-password" minlength="8">
+        </div>
+
+        <div class="form-group">
           <label class="form-label">Groups</label>
           <div class="d-flex gap-4 mt-1">
             {% for group in assignable_groups %}
@@ -84,6 +97,43 @@
       </div>
     </form>
   </div>
+
+<!-- Change password modal -->
+<div id="modal-passwd" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Change Password</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-passwd">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">User</label>
+          <input id="p-username" class="input" type="text" readonly>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="p-password">New password</label>
+          <input id="p-password" class="input" type="password" required
+                 autocomplete="new-password" minlength="8">
+          <span class="form-hint">At least 8 characters.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="p-password2">Confirm new password</label>
+          <input id="p-password2" class="input" type="password" required
+                 autocomplete="new-password" minlength="8">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-passwd-submit" class="btn btn-primary">Set Password</button>
+      </div>
+    </form>
+  </div>
+</div>
 </div>
 {% endblock %}
 

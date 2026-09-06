@@ -11,11 +11,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   bindModalClose('modal-user');
+  bindModalClose('modal-passwd');
+
+  document.getElementById('form-passwd').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn      = document.getElementById('btn-passwd-submit');
+    const username = document.getElementById('p-username').value;
+    const password = document.getElementById('p-password').value;
+    const confirm2 = document.getElementById('p-password2').value;
+
+    if (password.length < 8) { toast('Password must be at least 8 characters.', 'warn'); return; }
+    if (password !== confirm2) { toast('The passwords do not match.', 'warn'); return; }
+
+    setLoading(btn, true, 'Saving…');
+    try {
+      await apiJSON('POST', `/api/users/${encodeURIComponent(username)}/password`, { password });
+      toast(`Password updated for "${username}".`, 'ok');
+      closeModal('modal-passwd');
+    } catch (e) {
+      toast(`Error: ${e.message}`, 'err');
+    } finally {
+      setLoading(btn, false);
+    }
+  });
 
   document.getElementById('form-user').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn      = document.getElementById('btn-user-submit');
     const username = document.getElementById('f-username').value.trim();
+    const password = document.getElementById('f-password').value;
+    const confirm2 = document.getElementById('f-password2').value;
     const groups   = Array.from(document.querySelectorAll('.f-group:checked')).map(c => c.value);
     const shell    = document.getElementById('f-shell').value.trim() || '/bin/bash';
     const uid      = document.getElementById('f-uid')?.value.trim() || '';
@@ -26,8 +51,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       toast('Invalid username (lowercase letters, digits, underscore, hyphen).', 'warn');
       return;
     }
+    if (password.length < 8) { toast('Password must be at least 8 characters.', 'warn'); return; }
+    if (password !== confirm2) { toast('The passwords do not match.', 'warn'); return; }
 
-    const body = { username, groups, shell };
+    const body = { username, password, groups, shell };
     if (uid) body.uid = parseInt(uid);
     if (gid) body.gid = parseInt(gid);
 
@@ -81,9 +108,16 @@ function renderUser(u) {
       <td>${groups || '<span class="text-muted">—</span>'}</td>
       <td class="mono muted">${esc(u.shell || '/bin/bash')}</td>
       <td class="col-actions advanced-only">
+        <button class="btn btn-secondary btn-sm" onclick="changePassword('${esc(u.username)}')">Password</button>
         ${!isSelf ? `<button class="btn btn-danger btn-sm" onclick="deleteUser('${esc(u.username)}')">Remove</button>` : ''}
       </td>
     </tr>`;
+}
+
+function changePassword(username) {
+  document.getElementById('form-passwd').reset();
+  document.getElementById('p-username').value = username;
+  openModal('modal-passwd');
 }
 
 async function deleteUser(username) {
