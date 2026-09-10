@@ -6,13 +6,19 @@ GET  /info     — hostname, timezone, uptime
 POST /hostname — set hostname
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
+GET  /config   — download this appliance's configuration
+POST /config   — load a configuration back and apply it
 """
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+import asyncio
+
+import yaml
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, Response
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
+from freedomnas.reconcile import ReconciliationEngine
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -76,3 +82,61 @@ async def shutdown(username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": "Shutting down"}
+
+
+# ---------------------------------------------------------------------------
+# Configuration export and import
+#
+# FreedomNAS restores a system by re-applying the desired state, not by
+# putting saved files back: the export is that desired state, and the import
+# hands it to the same reconciler the first boot uses.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/config")
+async def export_config(username: str = Depends(authenticate)):
+    config = get_config()
+    hostname = config.get_hostname() or "freedomnas"
+    body = yaml.safe_dump(config.config, sort_keys=False, allow_unicode=True)
+    return Response(
+        content=body,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{hostname}-config.yaml"'},
+    )
+
+
+@router.post("/config")
+async def import_config(request: Request, username: str = Depends(authenticate)):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    try:
+        incoming = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        return JSONResponse(status_code=422, content={"detail": f"Not valid YAML: {exc}"})
+
+    if not isinstance(incoming, dict):
+        return JSONResponse(status_code=422, content={"detail": "Expected a YAML mapping"})
+
+    config = get_config()
+    previous = config.config
+    config.config = incoming
+    try:
+        config.save()          # validates the structure before it touches the disk
+    except ConfigurationException as exc:
+        config.config = previous
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    reconciler = ReconciliationEngine(get_engine(), config)
+    try:
+        results = await asyncio.to_thread(reconciler.reconcile, None, "declarative")
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Configuration saved, but applying it failed: {exc}"},
+        )
+
+    return {
+        "applied": [r.action for r in results if r.target_state == "applied"],
+        "skipped": [r.action for r in results if r.target_state == "skipped"],
+        "failed": [{"action": r.action, "error": r.error}
+                   for r in results if r.target_state == "failed"],
+    }
