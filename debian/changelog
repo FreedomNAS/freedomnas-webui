@@ -1,0 +1,6 @@
+freedomnas-webui (4.0.0-1) unstable; urgency=medium
+
+  * Initial packaging
+  * Declares the Python dependencies the WebUI imports at start-up
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Thu, 10 Sep 2026 03:00:00 +0000

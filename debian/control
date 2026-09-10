@@ -1,0 +1,29 @@
+Source: freedomnas-webui
+Section: admin
+Priority: optional
+Maintainer: FreedomNAS Team <dev@freedomnas.io>
+Standards-Version: 4.6.2
+Build-Depends: debhelper-compat (= 13)
+Homepage: https://codeberg.org/FreedomNAS/freedomnas-webui
+Vcs-Browser: https://codeberg.org/FreedomNAS/freedomnas-webui
+Vcs-Git: https://codeberg.org/FreedomNAS/freedomnas-webui.git
+
+Package: freedomnas-webui
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-fastapi,
+ python3-uvicorn,
+ python3-jinja2,
+ python3-pam,
+ python3-yaml,
+ freedomnas-core,
+ freedomnas-profiles
+Recommends: cron
+Description: FreedomNAS WebUI — FastAPI appliance interface
+ The web interface of the FreedomNAS appliance: storage, shares, users,
+ network, updates and the first-run wizard, served by uvicorn over TLS.
+ .
+ Every dependency here is imported at start-up, python3-jinja2 included:
+ api/main.py builds its Jinja2Templates at module level, and uvicorn
+ reports a missing one only as "could not import module api.main".
