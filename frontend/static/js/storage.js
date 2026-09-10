@@ -84,6 +84,10 @@ async function loadPools() {
     const d = await apiJSON('GET', '/api/storage/pools');
     if (!d.pools?.length) { el.innerHTML = emptyState('No ZFS pools found.'); return; }
     el.innerHTML = d.pools.map(renderPool).join('');
+    el.querySelectorAll('[data-attach]').forEach(b =>
+      b.addEventListener('click', () => attachDevice(b.dataset.attach)));
+    el.querySelectorAll('[data-detach]').forEach(b =>
+      b.addEventListener('click', () => detachDevice(b.dataset.pool, b.dataset.detach)));
     // Pre-fill snapshot dataset datalist
     const dl = document.getElementById('ds-list');
     if (dl) dl.innerHTML = d.pools.map(p => `<option value="${p.name}">`).join('');
@@ -228,7 +232,51 @@ function renderPool(p) {
         <div class="pool-stat-item"><span class="pool-stat-label">Used</span><span class="pool-stat-value">${esc(p.used || '—')}</span></div>
         <div class="pool-stat-item"><span class="pool-stat-label">Free</span><span class="pool-stat-value">${esc(p.free || '—')}</span></div>
       </div>
+      <div class="advanced-only mt-3">
+        ${attachedDevices(p, 'cache', 'Cache (L2ARC)')}
+        ${attachedDevices(p, 'log', 'Log (SLOG)')}
+        <button class="btn btn-secondary btn-sm" data-attach="${esc(p.name)}">Add cache or log device</button>
+      </div>
     </div>`;
+}
+
+// Cache and log hold no data: losing one costs speed, not files. That is why
+// they can be attached to a pool that already exists — and detached again.
+function attachedDevices(pool, role, label) {
+  const devices = pool[`${role}_devices`] || [];
+  if (!devices.length) return '';
+  return `
+    <div class="pool-detail mb-2">
+      <span class="text-muted">${label}:</span>
+      ${devices.map(d => `
+        <span class="mono">${esc(d)}</span>
+        <button class="btn btn-ghost btn-sm" title="Detach"
+                data-detach="${esc(d)}" data-pool="${esc(pool.name)}">×</button>`).join(' ')}
+    </div>`;
+}
+
+async function attachDevice(pool) {
+  const role = prompt(`Attach to ${pool} — type "cache" for read cache (L2ARC) or "log" for the intent log (SLOG):`, 'cache');
+  if (!role) return;
+  if (role !== 'cache' && role !== 'log') { toast('Type cache or log.', 'err'); return; }
+  const device = prompt(`Device for the ${role} (a whole disk or partition, e.g. /dev/disk/by-id/ata-SSD…):`);
+  if (!device) return;
+  try {
+    const res = await apiJSON('POST', `/api/storage/pools/${pool}/devices`,
+                              { role, devices: [device.trim()] });
+    toast(`Attached ${res.attached.join(', ')} as ${role}`, 'ok');
+    loadPools();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function detachDevice(pool, device) {
+  if (!confirm(`Detach ${device} from ${pool}?\n\nNo data is lost: a cache or log device holds none.`)) return;
+  try {
+    await apiJSON('DELETE',
+      `/api/storage/pools/${pool}/devices?device=${encodeURIComponent(device)}`);
+    toast(`Detached ${device}`, 'ok');
+    loadPools();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 function emptyState(msg) {

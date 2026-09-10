@@ -9,6 +9,7 @@ POST /initialize  — set hostname, write smb.conf usershare stanza, optionally
 POST /topgrade    — configure topgrade (can also be called post-setup)
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter
@@ -17,7 +18,10 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
+from freedomnas import pools, shadow
 from api.deps import get_config, get_engine
+
+logger = logging.getLogger("freedomnas.webui.setup")
 
 router = APIRouter()
 
@@ -32,6 +36,12 @@ def _validate_pool_cfg(pool_cfg: dict) -> Optional[str]:
         return "pool.devices must be a non-empty list"
     if len(pool_cfg.get("master_passphrase", "")) < MIN_PASSPHRASE_LENGTH:
         return f"pool.master_passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"
+
+    data = set(pool_cfg.get("devices") or [])
+    for role in ("cache_devices", "log_devices"):
+        overlap = data & set(pool_cfg.get(role) or [])
+        if overlap:
+            return f"pool.{role} cannot reuse a data device: {', '.join(sorted(overlap))}"
     return None
 
 
@@ -57,12 +67,33 @@ def _provision_encrypted_pool(engine, config, pool_cfg: dict) -> None:
         usb_devices=usb_devices,
     )
 
+    # Cache and log come after the pool exists, on purpose: they hold no data,
+    # and an SSD that will not attach must not take the new pool down with it.
+    attached = pools.attach_devices(
+        engine,
+        pool_name,
+        cache=pool_cfg.get("cache_devices"),
+        log=pool_cfg.get("log_devices"),
+    )
+
+    # A pool carries the identity of the appliance too: the configuration's
+    # shadow copy is what a reinstall onto a blank disk finds waiting here.
+    try:
+        shadow.ensure_dataset(engine, pool_name)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        # A pool without its shadow dataset is still a working pool, so this
+        # does not fail the setup — but it is not swallowed either.
+        logger.warning("No shadow dataset on %s: %s", pool_name, exc)
+
     config.add_pool({
         "name": pool_name,
         "vdev_type": vdev_type,
         "encrypted": True,
         "usb_keyslot_devices": len(usb_devices),
+        "cache_devices": attached["cache"],
+        "log_devices": attached["log"],
     })
+    return attached
 
 
 @router.get("/status")

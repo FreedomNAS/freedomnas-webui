@@ -5,6 +5,8 @@ GET  /pools               — list ZFS pools
 GET  /datasets            — list ZFS datasets
 GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
+POST /pools/{pool}/devices — attach a cache (L2ARC) or log (SLOG) device
+DELETE /pools/{pool}/devices?device=… — detach one again
 GET  /properties          — the ZFS properties this edition supports
 GET  /datasets/{name}/properties — what a dataset has them set to
 PUT  /datasets/{name}/properties — change them
@@ -20,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
+from freedomnas import pools as pool_devices
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -32,11 +35,20 @@ async def list_pools(username: str = Depends(authenticate)):
         stdout, _ = engine.execute("zfs", "pool_list")
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    # What is attached as cache or log is not in `zpool list`: it is in
+    # config.yaml, written when the device was attached.
+    recorded = {p.get("name"): p for p in get_config().get_pools()}
+
     pools = []
     for line in stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 2:
-            pools.append({"name": parts[0], "size": parts[1]})
+            entry = {"name": parts[0], "size": parts[1]}
+            known = recorded.get(parts[0], {})
+            for key in ("cache_devices", "log_devices", "vdev_type", "encrypted"):
+                if known.get(key):
+                    entry[key] = known[key]
+            pools.append(entry)
     return {"pools": pools}
 
 
@@ -225,3 +237,68 @@ async def set_dataset_properties(
         status_code=status,
         content={"dataset": dataset, "applied": applied, "failed": failed},
     )
+
+
+# ---------------------------------------------------------------------------
+# Cache (L2ARC) and log (SLOG) devices
+#
+# Neither holds data: they are attached to a pool that already exists, which
+# is why the same endpoint serves "add the SSD I just bought" and "add one
+# while creating the pool" — creation attaches them straight afterwards.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/pools/{pool_name}/devices")
+async def attach_pool_devices(
+    pool_name: str, body: dict, username: str = Depends(authenticate)
+):
+    role = (body.get("role") or "").strip()
+    devices = [str(d).strip() for d in (body.get("devices") or []) if str(d).strip()]
+    if role not in pool_devices.ROLES:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": f"role must be one of {', '.join(sorted(pool_devices.ROLES))}"},
+        )
+    if not devices:
+        return JSONResponse(status_code=422, content={"detail": "devices must not be empty"})
+
+    engine, config = get_engine(), get_config()
+    result = pool_devices.attach_devices(engine, pool_name, **{role: devices})
+    if result["errors"]:
+        return JSONResponse(status_code=500, content={"detail": result["errors"][0]["error"]})
+
+    for pool in config.get_pools():
+        if pool.get("name") == pool_name:
+            key = f"{role}_devices"
+            pool[key] = sorted(set(pool.get(key, []) + result[role]))
+            config.add_pool(pool)
+            break
+    return {"pool": pool_name, "role": role, "attached": result[role]}
+
+
+@router.delete("/pools/{pool_name}/devices")
+async def detach_pool_device(
+    pool_name: str, device: str, username: str = Depends(authenticate)
+):
+    """
+    The device arrives as a query parameter, not a path segment: `/dev/disk/
+    by-id/...` in a path loses its leading slash, and `zpool remove` would be
+    handed a relative name that means something else.
+    """
+    engine, config = get_engine(), get_config()
+    try:
+        pool_devices.detach_device(engine, pool_name, device)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    for pool in config.get_pools():
+        if pool.get("name") == pool_name:
+            changed = False
+            for key in ("cache_devices", "log_devices"):
+                if device in pool.get(key, []):
+                    pool[key] = [d for d in pool[key] if d != device]
+                    changed = True
+            if changed:
+                config.add_pool(pool)
+            break
+    return {"pool": pool_name, "detached": device}
