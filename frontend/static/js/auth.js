@@ -40,6 +40,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      if (res.status === 403) {
+        showError('This account is not an administrator.');
+        pass.value = '';
+        return;
+      }
+
       if (res.ok) {
         sessionStorage.setItem('fnas_auth', btoa(`${u}:${p}`));
         sessionStorage.setItem('fnas_user', u);

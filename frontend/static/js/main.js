@@ -43,6 +43,10 @@ async function api(method, path, body = null) {
     throw new Error('Unauthorized');
   }
 
+  if (res.status === 403) {
+    throw new Error('This account is not an administrator');
+  }
+
   if (res.status === 503) {
     location.href = '/setup/';
     throw new Error('Not initialized');

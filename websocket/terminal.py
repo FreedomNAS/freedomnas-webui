@@ -31,15 +31,35 @@ from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
-from api.deps import get_config, get_engine, verify_credentials
+from api.deps import get_config, get_engine, is_administrator, verify_credentials
 
 AUTH_TIMEOUT_SECONDS = 10
 
 router = APIRouter()
 
 
-async def _send(ws: WebSocket, stream: str, line: str) -> None:
-    await ws.send_text(json.dumps({"stream": stream, "line": line}))
+# What a closed socket raises. Starlette reports WebSocketDisconnect when it
+# sees the close frame, but uvicorn raises RuntimeError if something is written
+# after the close has gone out — which is what a browser tab closed mid-update
+# produces, and it used to escape as a 500 in the server log.
+CLOSED = (WebSocketDisconnect, RuntimeError)
+
+
+async def _send(ws: WebSocket, stream: str, line: str) -> bool:
+    """Send a line. Returns False once the socket is gone."""
+    try:
+        await ws.send_text(json.dumps({"stream": stream, "line": line}))
+        return True
+    except CLOSED:
+        return False
+
+
+async def _close(ws: WebSocket, code: int = 1000) -> None:
+    """Close the socket, tolerating one the client already closed."""
+    try:
+        await ws.close(code=code)
+    except CLOSED:
+        pass
 
 
 async def _authenticate_socket(websocket: WebSocket):
@@ -57,12 +77,19 @@ async def _authenticate_socket(websocket: WebSocket):
     except (asyncio.TimeoutError, json.JSONDecodeError, ValueError,
             binascii.Error, UnicodeDecodeError):
         await _send(websocket, "stderr", "Authentication required")
-        await websocket.close(code=4401)
+        await _close(websocket, 4401)
         return None
 
     if not username or not verify_credentials(username, password):
         await _send(websocket, "stderr", "Invalid credentials")
-        await websocket.close(code=4401)
+        await _close(websocket, 4401)
+        return None
+
+    # This socket runs a system update as that user: the HTTP routes are not
+    # the only door that has to ask whether they may administer the machine.
+    if not is_administrator(username):
+        await _send(websocket, "stderr", "This account is not an administrator")
+        await _close(websocket, 4403)
         return None
 
     return username
@@ -83,12 +110,12 @@ async def updates_terminal(websocket: WebSocket):
         command = engine.get_command("updates", "run_topgrade", username=username)
     except CommandTranslationError as exc:
         await _send(websocket, "stderr", f"Profile error: {exc}")
-        await websocket.close(code=1011)
+        await _close(websocket, 1011)
         return
 
     if isinstance(command, list):
         await _send(websocket, "stderr", "run_topgrade must be a single command, not a list")
-        await websocket.close(code=1011)
+        await _close(websocket, 1011)
         return
 
     # Pre-update snapshot (spec §7.7)
@@ -115,16 +142,21 @@ async def updates_terminal(websocket: WebSocket):
         )
     except Exception as exc:
         await _send(websocket, "stderr", f"Failed to start process: {exc}")
-        await websocket.close(code=1011)
+        await _close(websocket, 1011)
         return
 
     async def stream_pipe(pipe, stream_name: str):
+        """
+        Drain the pipe even after the client is gone: the update keeps running
+        either way, and a full pipe would block topgrade halfway through a
+        package manager transaction.
+        """
+        connected = True
         async for raw in pipe:
+            if not connected:
+                continue
             line = raw.decode(errors="replace").rstrip()
-            try:
-                await _send(websocket, stream_name, line)
-            except WebSocketDisconnect:
-                return
+            connected = await _send(websocket, stream_name, line)
 
     await asyncio.gather(
         stream_pipe(proc.stdout, "stdout"),
@@ -134,6 +166,6 @@ async def updates_terminal(websocket: WebSocket):
 
     try:
         await websocket.send_text(json.dumps({"exit_code": exit_code}))
-        await websocket.close()
-    except WebSocketDisconnect:
+    except CLOSED:
         pass
+    await _close(websocket)
