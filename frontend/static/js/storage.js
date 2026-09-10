@@ -12,6 +12,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-create-snap')?.addEventListener('click', () => openModal('modal-snapshot'));
   bindModalClose('modal-snapshot');
 
+  bindModalClose('modal-pool');
+  document.getElementById('btn-create-pool')?.addEventListener('click', openPoolForm);
+  document.getElementById('f-pool-encrypt')?.addEventListener('change', (e) => {
+    document.getElementById('pool-passphrase-group').hidden = !e.target.checked;
+  });
+  document.getElementById('form-pool').addEventListener('submit', submitPool);
+
   bindModalClose('modal-properties');
   document.getElementById('form-properties').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -292,4 +299,91 @@ function errorState(msg) {
 
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+
+// ── Creating a pool ──────────────────────────────────────────────────────────
+// The one screen in the WebUI that destroys what it touches: it lists what is
+// already on each device, refuses to preselect anything, and asks for the
+// erase to be acknowledged before the button does anything.
+
+async function openPoolForm() {
+  const list = document.getElementById('pool-devices');
+  list.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  document.getElementById('form-pool').reset();
+  document.getElementById('pool-passphrase-group').hidden = true;
+  openModal('modal-pool');
+
+  let devices;
+  try {
+    devices = (await apiJSON('GET', '/api/storage/devices')).devices;
+  } catch (e) {
+    list.innerHTML = errorState(e.message);
+    return;
+  }
+
+  const disks = devices.filter(d => d.type === 'disk' || d.type === 'part');
+  if (!disks.length) { list.innerHTML = emptyState('No block devices found.'); return; }
+
+  list.innerHTML = disks.map(d => `
+    <label class="device-row${d.in_use ? ' device-busy' : ''}">
+      <input type="checkbox" value="${esc(d.name)}"${d.in_use ? ' disabled' : ''}>
+      <span class="mono">${esc(d.name)}</span>
+      <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
+      ${d.in_use ? `<span class="badge badge-warn">${esc(d.fstype || d.mountpoint)}</span>` : ''}
+    </label>`).join('');
+
+  const free = disks.filter(d => !d.in_use);
+  for (const id of ['f-pool-cache', 'f-pool-log']) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    sel.innerHTML = '<option value="">None</option>' +
+      free.map(d => `<option value="${esc(d.name)}">${esc(d.name)} — ${humanSize(d.size)}</option>`).join('');
+  }
+}
+
+function humanSize(bytes) {
+  if (!bytes) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0, n = bytes;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+async function submitPool(e) {
+  e.preventDefault();
+  const name = document.getElementById('f-pool-name').value.trim();
+  const devices = [...document.querySelectorAll('#pool-devices input:checked')].map(i => i.value);
+  const cache = document.getElementById('f-pool-cache').value;
+  const log = document.getElementById('f-pool-log')?.value || '';
+  const encrypted = document.getElementById('f-pool-encrypt').checked;
+  const passphrase = document.getElementById('f-pool-passphrase').value;
+
+  if (!devices.length) { toast('Select at least one data device.', 'err'); return; }
+  if (!confirm(`Create ${name} on:\n\n${devices.join('\n')}\n\nEverything on those devices will be destroyed.`)) return;
+
+  const btn = document.getElementById('btn-pool-submit');
+  btn.disabled = true;
+  try {
+    const res = await apiJSON('POST', '/api/storage/pools', {
+      name,
+      vdev_type: document.getElementById('f-pool-layout').value,
+      devices,
+      cache_devices: cache ? [cache] : [],
+      log_devices: log ? [log] : [],
+      encrypted,
+      master_passphrase: encrypted ? passphrase : '',
+    });
+    if (res.warnings?.length) {
+      toast(`Pool ${res.pool} created, but ${res.warnings[0].role} did not attach.`, 'warn');
+    } else {
+      toast(`Pool ${res.pool} created.`, 'ok');
+    }
+    closeModal('modal-pool');
+    loadPools();
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
 }

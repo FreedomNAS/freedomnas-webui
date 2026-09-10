@@ -9,6 +9,7 @@
     <p>ZFS pools, datasets, and snapshots</p>
   </div>
   <div class="page-header-actions">
+    <button id="btn-create-pool" class="btn btn-primary">Create Pool</button>
     <button id="btn-create-snap" class="btn btn-secondary advanced-only" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Create Snapshot
@@ -25,6 +26,79 @@
 <div id="panel-pools"     class="tab-panel active"></div>
 <div id="panel-datasets"  class="tab-panel"></div>
 <div id="panel-snapshots" class="tab-panel"></div>
+
+<!-- Create pool -->
+<div id="modal-pool" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <span class="modal-title">Create Pool</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-pool">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="f-pool-name">Pool Name</label>
+          <input id="f-pool-name" class="input" type="text" placeholder="datapool"
+                 required autocomplete="off">
+          <span class="form-hint">A letter, then letters, digits, <span class="mono">_ . : -</span></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-pool-layout">Layout</label>
+          <select id="f-pool-layout" class="select">
+            <option value="">Single / stripe — no redundancy</option>
+            <option value="mirror">Mirror — every disk holds everything</option>
+            <option value="raidz1">RAIDZ1 — survives one failed disk</option>
+            <option value="raidz2" selected>RAIDZ2 — survives two</option>
+            <option value="raidz3">RAIDZ3 — survives three</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Data Devices</label>
+          <div id="pool-devices" class="device-list"></div>
+          <span class="form-hint">Everything on the selected devices is destroyed.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-pool-cache">Cache device (L2ARC) — optional</label>
+          <select id="f-pool-cache" class="select"><option value="">None</option></select>
+          <span class="form-hint">An SSD used as a read cache. It holds no data: losing it costs speed, not files.</span>
+        </div>
+
+        <div class="form-group advanced-only">
+          <label class="form-label" for="f-pool-log">Log device (SLOG) — optional</label>
+          <select id="f-pool-log" class="select"><option value="">None</option></select>
+          <span class="form-hint">Only helps synchronous writes (NFS, databases).</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">
+            <input id="f-pool-encrypt" type="checkbox"> Encrypt this pool
+          </label>
+        </div>
+        <div class="form-group" id="pool-passphrase-group" hidden>
+          <label class="form-label" for="f-pool-passphrase">Master Passphrase</label>
+          <input id="f-pool-passphrase" class="input" type="password" autocomplete="new-password">
+          <span class="form-hint">At least 12 characters. Lose it and the pool is unreadable.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">
+            <input id="f-pool-confirm" type="checkbox" required>
+            I understand the selected devices will be erased
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-pool-submit" class="btn btn-primary">Create Pool</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <!-- Dataset properties: reachable only above assisted level -->
 <div id="modal-properties" class="modal-backdrop" role="dialog" aria-modal="true">

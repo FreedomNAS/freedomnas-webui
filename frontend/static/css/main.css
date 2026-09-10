@@ -741,6 +741,14 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
 .modal.modal-wide { max-width: 640px; }
 .modal.modal-wide .modal-body { max-height: 60vh; overflow-y: auto; }
 
+/* The device picker in the pool form: one row per block device, and the ones
+   already carrying a filesystem are visibly out of reach. */
+.device-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.device-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+              border: 1px solid var(--card-border); border-radius: var(--radius-sm); cursor: pointer; }
+.device-row:hover { background: var(--hover-bg, rgba(127,127,127,.08)); }
+.device-row.device-busy { opacity: .55; cursor: not-allowed; }
+
 .modal-header {
   display: flex;
   align-items: center;

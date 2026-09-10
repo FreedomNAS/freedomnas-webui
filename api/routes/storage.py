@@ -5,6 +5,8 @@ GET  /pools               — list ZFS pools
 GET  /datasets            — list ZFS datasets
 GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
+GET  /devices             — block devices, and what is already on them
+POST /pools               — create a pool
 POST /pools/{pool}/devices — attach a cache (L2ARC) or log (SLOG) device
 DELETE /pools/{pool}/devices?device=… — detach one again
 GET  /properties          — the ZFS properties this edition supports
@@ -15,6 +17,7 @@ PUT  /snapshot-policies/{dataset} — set how many to keep, per interval
 DELETE /snapshot-policies/{dataset} — stop scheduling (keeps existing snapshots)
 """
 
+import logging
 import re
 
 from fastapi import APIRouter, Depends
@@ -23,7 +26,11 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas import pools as pool_devices
+from freedomnas import shadow
+from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
+
+logger = logging.getLogger("freedomnas.webui.storage")
 
 router = APIRouter()
 
@@ -302,3 +309,119 @@ async def detach_pool_device(
                 config.add_pool(pool)
             break
     return {"pool": pool_name, "detached": device}
+
+
+# ---------------------------------------------------------------------------
+# Creating a pool
+#
+# This is the one operation in the WebUI that destroys what it touches, so it
+# is deliberately literal: it asks for whole device paths, refuses anything
+# ambiguous, and never passes `-f`. ZFS already refuses a disk that carries
+# somebody else's pool, and that refusal is better coming from ZFS than from
+# a guess made here.
+# ---------------------------------------------------------------------------
+
+_POOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
+_LSBLK_FIELD = re.compile(r'(\w+)="([^"]*)"')
+MIN_PASSPHRASE_LENGTH = 12
+
+
+@router.get("/devices")
+async def list_devices(username: str = Depends(authenticate)):
+    """
+    Block devices with what is already on them, so the pool form can show
+    "in use" instead of letting somebody pick their running system.
+    """
+    engine = get_engine()
+    try:
+        stdout, _ = engine.execute("media", "list_devices")
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    if engine.get_os_info().get("os_family") == "bsd":
+        # `sysctl -n kern.disks` gives names and nothing else.
+        return {"devices": [{"name": f"/dev/{n}", "type": "disk"}
+                            for n in stdout.split()]}
+
+    devices = []
+    for line in stdout.splitlines():
+        fields = dict(_LSBLK_FIELD.findall(line))
+        if not fields.get("NAME"):
+            continue
+        devices.append({
+            "name": fields["NAME"],
+            "size": int(fields.get("SIZE") or 0),
+            "type": fields.get("TYPE", ""),
+            "fstype": fields.get("FSTYPE", ""),
+            "mountpoint": fields.get("MOUNTPOINT", ""),
+            "model": fields.get("MODEL", ""),
+            "in_use": bool(fields.get("FSTYPE") or fields.get("MOUNTPOINT")),
+        })
+    return {"devices": devices}
+
+
+@router.post("/pools")
+async def create_pool(body: dict, username: str = Depends(authenticate)):
+    name = (body.get("name") or "").strip()
+    vdev_type = (body.get("vdev_type") or "").strip()
+    devices = [str(d).strip() for d in (body.get("devices") or []) if str(d).strip()]
+    cache = [str(d).strip() for d in (body.get("cache_devices") or []) if str(d).strip()]
+    log = [str(d).strip() for d in (body.get("log_devices") or []) if str(d).strip()]
+    encrypt = bool(body.get("encrypted"))
+    passphrase = body.get("master_passphrase") or ""
+
+    if not _POOL_NAME.match(name):
+        return JSONResponse(status_code=422, content={
+            "detail": "A pool name starts with a letter and holds letters, digits, _ . : -"})
+    if not devices:
+        return JSONResponse(status_code=422, content={"detail": "Select at least one device"})
+
+    seen = set()
+    for role, group in (("devices", devices), ("cache_devices", cache), ("log_devices", log)):
+        for device in group:
+            if device in seen:
+                return JSONResponse(status_code=422, content={
+                    "detail": f"{device} is listed twice — a device belongs to one role"})
+            seen.add(device)
+
+    if encrypt and len(passphrase) < MIN_PASSPHRASE_LENGTH:
+        return JSONResponse(status_code=422, content={
+            "detail": f"The passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"})
+
+    engine, config = get_engine(), get_config()
+    try:
+        if encrypt:
+            PoolProvisioner(engine).create_encrypted_pool(
+                pool_name=name,
+                vdev_type=vdev_type,
+                devices=" ".join(devices),
+                master_passphrase=passphrase,
+                usb_devices=body.get("usb_devices") or [],
+            )
+        else:
+            engine.execute(
+                "zfs", "pool_create",
+                pool_name=name,
+                vdev_type=vdev_type,
+                devices=" ".join(devices),
+                ashift=body.get("ashift", 12),
+                compression=body.get("compression", "lz4"),
+            )
+    except (CommandExecutionError, CommandTranslationError, KeyManagementError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    attached = pool_devices.attach_devices(engine, name, cache=cache, log=log)
+
+    try:
+        shadow.ensure_dataset(engine, name)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        logger.warning("No shadow dataset on %s: %s", name, exc)
+
+    config.add_pool({
+        "name": name,
+        "vdev_type": vdev_type,
+        "encrypted": encrypt,
+        "cache_devices": attached["cache"],
+        "log_devices": attached["log"],
+    })
+    return {"pool": name, "attached": attached, "warnings": attached["errors"]}
