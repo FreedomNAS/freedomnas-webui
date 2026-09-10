@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
+from freedomnas import shadow
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -134,7 +135,12 @@ async def import_config(request: Request, username: str = Depends(authenticate))
             content={"detail": f"Configuration saved, but applying it failed: {exc}"},
         )
 
+    # An imported configuration is worth mirroring straight away: waiting for
+    # the nightly run would leave the data pool holding the old one.
+    mirrored = await asyncio.to_thread(shadow.sync, get_engine(), str(config.config_path))
+
     return {
+        "mirrored_to": [r["dataset"] for r in mirrored if r["copied"]],
         "applied": [r.action for r in results if r.target_state == "applied"],
         "skipped": [r.action for r in results if r.target_state == "skipped"],
         "failed": [{"action": r.action, "error": r.error}
