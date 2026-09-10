@@ -737,6 +737,10 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
 }
 .modal-backdrop.open .modal { transform: scale(1) translateY(0); }
 
+/* The ZFS property sheet is a long form: give it room and let it scroll. */
+.modal.modal-wide { max-width: 640px; }
+.modal.modal-wide .modal-body { max-height: 60vh; overflow-y: auto; }
+
 .modal-header {
   display: flex;
   align-items: center;

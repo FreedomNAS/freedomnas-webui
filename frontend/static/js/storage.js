@@ -12,6 +12,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-create-snap')?.addEventListener('click', () => openModal('modal-snapshot'));
   bindModalClose('modal-snapshot');
 
+  bindModalClose('modal-properties');
+  document.getElementById('form-properties').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const changed = {};
+    form.querySelectorAll('[data-prop]').forEach(el => {
+      if (el.value !== el.dataset.was) changed[el.dataset.prop] = el.value;
+    });
+    if (!Object.keys(changed).length) { closeModal('modal-properties'); return; }
+
+    const btn = document.getElementById('btn-prop-submit');
+    btn.disabled = true;
+    try {
+      const res = await apiJSON(
+        'PUT', `/api/storage/datasets/${form.dataset.dataset}/properties`, changed);
+      if (res.failed?.length) {
+        toast(`Applied ${res.applied.length}, failed ${res.failed.length}: ` +
+              res.failed.map(f => `${f.property}`).join(', '), 'err');
+      } else {
+        toast(`Applied: ${res.applied.join(', ')}`, 'ok');
+        closeModal('modal-properties');
+      }
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   document.getElementById('form-snapshot').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn     = document.getElementById('btn-snap-submit');
@@ -74,6 +103,7 @@ async function loadDatasets() {
         <table>
           <thead><tr>
             <th>Dataset</th><th>Used</th><th>Available</th><th>Referenced</th><th>Mount</th>
+            <th class="advanced-only"></th>
           </tr></thead>
           <tbody>
             ${d.datasets.map(r => `
@@ -83,13 +113,69 @@ async function loadDatasets() {
                 <td>${esc(r.avail)}</td>
                 <td>${esc(r.refer)}</td>
                 <td class="mono text-muted">${esc(r.mountpoint)}</td>
+                <td class="advanced-only">
+                  <button class="btn btn-secondary btn-sm" data-props="${esc(r.name)}">Properties</button>
+                </td>
               </tr>`).join('')}
           </tbody>
         </table>
       </div>`;
+    el.querySelectorAll('[data-props]').forEach(b =>
+      b.addEventListener('click', () => openProperties(b.dataset.props)));
   } catch (e) {
     el.innerHTML = errorState(e.message);
   }
+}
+
+// ── Dataset properties ───────────────────────────────────────────────────────
+// The catalogue comes from the profile, and each property says which UI level
+// it belongs to: the assisted level never gets here at all (the button that
+// opens this is .advanced-only), and expert-only tunables stay hidden until
+// the level is raised again.
+
+let propCatalogue = null;
+
+async function openProperties(dataset) {
+  const body = document.getElementById('prop-body');
+  document.getElementById('prop-dataset').textContent = dataset;
+  document.getElementById('form-properties').dataset.dataset = dataset;
+  body.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  openModal('modal-properties');
+
+  try {
+    if (!propCatalogue) {
+      propCatalogue = (await apiJSON('GET', '/api/storage/properties')).properties;
+    }
+    const current = (await apiJSON(
+      'GET', `/api/storage/datasets/${dataset}/properties`)).properties;
+    body.innerHTML = Object.entries(propCatalogue)
+      .filter(([, spec]) => !spec.create_only)
+      .map(([name, spec]) => propertyRow(name, spec, current[name]))
+      .join('');
+  } catch (e) {
+    body.innerHTML = errorState(e.message);
+  }
+}
+
+function propertyRow(name, spec, cur) {
+  const value = cur ? cur.value : (spec.default ?? '');
+  const gate = spec.level === 'expert' ? ' expert-only'
+             : spec.level === 'advanced' ? ' advanced-only' : '';
+  const inherited = cur && cur.source !== 'local'
+    ? `<span class="text-muted"> — ${esc(cur.source)}</span>` : '';
+  const control = spec.type === 'enum'
+    ? `<select class="select" data-prop="${esc(name)}" data-was="${esc(value)}">
+         ${spec.values.map(v =>
+           `<option${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('')}
+       </select>`
+    : `<input class="input" type="text" data-prop="${esc(name)}"
+              data-was="${esc(value)}" value="${esc(value)}">`;
+  return `
+    <div class="form-group${gate}">
+      <label class="form-label mono">${esc(name)}${inherited}</label>
+      ${control}
+      <span class="form-hint">${esc(spec.help || '')}</span>
+    </div>`;
 }
 
 async function loadSnapshots() {
