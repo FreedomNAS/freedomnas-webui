@@ -45,6 +45,33 @@ def _validate_pool_cfg(pool_cfg: dict) -> Optional[str]:
     return None
 
 
+def _prepare_usershares(engine) -> None:
+    """
+    Make Samba usershares possible, so shares can be created later (spec §7.6).
+
+    The [global] usershare settings are appended only when smb.conf lacks
+    them: an installation that wrote a complete smb.conf already has them,
+    and a second copy would be noise. The directory is created through the
+    profile, since where it lives and how it is created is the edition's.
+    """
+    smb_conf = engine.get_profile_value("samba", "config_file")
+    usershare_path = engine.get_profile_value("samba", "usershare_path")
+    try:
+        with open(smb_conf) as f:
+            current = f.read()
+    except FileNotFoundError:
+        current = ""
+    if "usershare path" not in current:
+        with open(smb_conf, "a") as f:
+            f.write(
+                "\n[global]\n"
+                f"   usershare path = {usershare_path}\n"
+                "   usershare max shares = 100\n"
+                "   usershare allow guests = no\n"
+            )
+    engine.execute("samba", "usershare_prepare", path=usershare_path)
+
+
 def _provision_encrypted_pool(engine, config, pool_cfg: dict) -> None:
     """
     Create the encrypted pool described by pool_cfg (already validated by
@@ -135,18 +162,7 @@ async def initialize(body: dict):
         engine.execute("system", "timezone_set", timezone=timezone)
         config.set("system.timezone", timezone)
 
-        # Write usershare stanza in smb.conf so shares can be created later (spec §7.6)
-        smb_conf = engine.get_profile_value("samba", "config_file")
-        usershare_stanza = (
-            "\n[global]\n"
-            "   usershare path = /var/lib/samba/usershares\n"
-            "   usershare max shares = 100\n"
-            "   usershare allow guests = no\n"
-        )
-        with open(smb_conf, "a") as f:
-            f.write(usershare_stanza)
-        import os
-        os.makedirs("/var/lib/samba/usershares", exist_ok=True)
+        _prepare_usershares(engine)
 
         # Optional: create an encrypted ZFS pool as part of first-run setup
         if pool_cfg:
