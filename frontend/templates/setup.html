@@ -70,12 +70,15 @@
           <option value="debian">Debian</option>
           <option value="freebsd">FreeBSD</option>
           <option value="arch">Arch Linux</option>
+          <option value="gentoo">Gentoo</option>
+          <option value="artix">Artix Linux</option>
+          <option value="void">Void Linux</option>
         </select>
-        <span class="form-hint">Choose the edition matching the OS this system runs.</span>
+        <span class="form-hint" id="edition-detected">Choose the edition matching the OS this system runs.</span>
       </div>
       <div class="alert alert-info" style="margin-top:4px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        <span>This selection determines which system commands FreedomNAS uses. It cannot be changed without re-running setup.</span>
+        <span>FreedomNAS detects the running OS by itself; the edition recorded here must match it and cannot be changed without re-running setup.</span>
       </div>
     </div>
     <div class="wizard-footer" id="footer-2" hidden>

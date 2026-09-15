@@ -129,6 +129,7 @@ async def setup_status():
     return {
         "initialized": config.is_initialized(),
         "edition": config.get_edition(),
+        "detected_edition": get_engine().os_type,
     }
 
 
@@ -139,7 +140,7 @@ async def initialize(body: dict):
     edition = body.get("edition", "").strip()
 
     if not edition:
-        return JSONResponse(status_code=422, content={"detail": "edition is required (debian/freebsd)"})
+        return JSONResponse(status_code=422, content={"detail": "edition is required"})
 
     pool_cfg = body.get("pool")
     if pool_cfg:
@@ -149,6 +150,13 @@ async def initialize(body: dict):
 
     engine = get_engine()
     config = get_config()
+
+    if edition not in engine.SUPPORTED_OS:
+        return JSONResponse(status_code=422, content={
+            "detail": f"Unknown edition '{edition}'. Supported: {', '.join(engine.SUPPORTED_OS)}"})
+    if edition != engine.os_type:
+        return JSONResponse(status_code=422, content={
+            "detail": f"This system runs the {engine.os_type} edition, not {edition}"})
 
     if config.is_initialized():
         return JSONResponse(status_code=409, content={"detail": "System already initialized"})

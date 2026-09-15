@@ -9,6 +9,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const res = await fetch('/api/setup/status');
     const d   = await res.json();
     if (d.initialized) { location.href = '/dashboard/'; return; }
+    const select = document.getElementById('f-edition');
+    const option = [...select.options].find(o => o.value && o.value === d.detected_edition);
+    if (option) {
+      select.value = option.value;
+      document.getElementById('edition-detected').textContent = `Detected: ${option.textContent}.`;
+    }
   } catch { /* proceed */ }
 
   let step = 1;
@@ -57,10 +63,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   function buildSummary() {
     const host    = document.getElementById('f-hostname').value.trim();
     const tz      = document.getElementById('f-timezone').value.trim() || 'UTC';
-    const edition = document.getElementById('f-edition').value;
+    const select  = document.getElementById('f-edition');
     document.getElementById('summary-hostname').textContent = host;
     document.getElementById('summary-timezone').textContent = tz;
-    document.getElementById('summary-edition').textContent  = edition;
+    document.getElementById('summary-edition').textContent  = select.options[select.selectedIndex].textContent;
   }
 
   async function initialize() {
