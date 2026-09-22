@@ -1005,6 +1005,7 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
    SETUP WIZARD
    ===================================================================== */
 .wizard-wrap {
+  flex: 1;
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -1085,6 +1086,7 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
    AUTH PAGE
    ===================================================================== */
 .auth-wrap {
+  flex: 1;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
