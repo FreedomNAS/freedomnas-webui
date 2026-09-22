@@ -20,6 +20,7 @@ from freedomnas.config import ConfigurationException
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from freedomnas import pools, shadow
 from api.deps import get_config, get_engine
+from api.routes.storage import layout_problem
 
 logger = logging.getLogger("freedomnas.webui.setup")
 
@@ -36,6 +37,12 @@ def _validate_pool_cfg(pool_cfg: dict) -> Optional[str]:
         return "pool.devices must be a non-empty list"
     if len(pool_cfg.get("master_passphrase", "")) < MIN_PASSPHRASE_LENGTH:
         return f"pool.master_passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"
+    problem = layout_problem(
+        pool_cfg.get("vdev_type", "").strip(),
+        *(pool_cfg.get(role) or [] for role in ("devices", "cache_devices", "log_devices")),
+    )
+    if problem:
+        return f"pool: {problem}"
 
     data = set(pool_cfg.get("devices") or [])
     for role in ("cache_devices", "log_devices"):

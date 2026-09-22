@@ -71,6 +71,9 @@ def test_a_failing_step_leaves_the_system_uninitialized(anonymous, engine, fresh
     ({"devices": []}, "pool.devices"),
     ({"master_passphrase": "short"}, "at least 12"),
     ({"cache_devices": ["/dev/sda"]}, "cannot reuse a data device"),
+    ({"devices": ["-f", "/dev/sda"]}, "not a device path"),
+    ({"log_devices": ["-f"]}, "not a device path"),
+    ({"vdev_type": "mirror -f"}, "vdev_type must be"),
 ])
 def test_an_invalid_pool_is_refused_before_anything_runs(anonymous, engine, fresh_config,
                                                          change, message):

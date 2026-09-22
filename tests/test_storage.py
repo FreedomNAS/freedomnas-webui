@@ -206,6 +206,8 @@ def test_cache_devices_are_attached_in_one_command_and_recorded(client, engine, 
 @pytest.mark.parametrize("body, message", [
     ({"role": "spare", "devices": ["/dev/sdc"]}, "role must be one of"),
     ({"role": "log", "devices": []}, "must not be empty"),
+    ({"role": "log", "devices": ["-f", "/dev/sdc"]}, "not a device path"),
+    ({"role": "cache", "devices": ["/dev/sdc -f"]}, "not a device path"),
 ])
 def test_attaching_needs_a_known_role_and_devices(client, engine, body, message):
     r = client.post("/api/storage/pools/tank/devices", body)
@@ -267,6 +269,13 @@ def test_a_striped_pool_has_no_vdev_type_argument(client, engine):
     ({"name": "tank x", "devices": ["/dev/sda"]}, "starts with a letter"),
     ({"name": "tank", "devices": []}, "at least one device"),
     ({"name": "tank", "devices": ["/dev/sda"], "log_devices": ["/dev/sda"]}, "listed twice"),
+    ({"name": "tank", "devices": ["-f", "/dev/sda"]}, "not a device path"),
+    ({"name": "tank", "devices": ["/dev/sda -f"]}, "not a device path"),
+    ({"name": "tank", "devices": ["/dev/../tmp/disk.img"]}, "not a device path"),
+    ({"name": "tank", "devices": ["sda"]}, "not a device path"),
+    ({"name": "tank", "devices": ["/dev/sda"], "cache_devices": ["-f"]}, "not a device path"),
+    ({"name": "tank", "devices": ["/dev/sda"], "vdev_type": "-O mountpoint=/etc mirror"},
+     "vdev_type must be"),
     ({"name": "tank", "devices": ["/dev/sda"], "encrypted": True,
       "master_passphrase": "short"}, "at least 12"),
 ])

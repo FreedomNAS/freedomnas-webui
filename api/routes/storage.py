@@ -18,6 +18,7 @@ DELETE /snapshot-policies/{dataset} — stop scheduling (keeps existing snapshot
 """
 
 import logging
+import posixpath
 import re
 
 from fastapi import APIRouter, Depends
@@ -268,6 +269,9 @@ async def attach_pool_devices(
         )
     if not devices:
         return JSONResponse(status_code=422, content={"detail": "devices must not be empty"})
+    problem = layout_problem("", devices)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
 
     engine, config = get_engine(), get_config()
     result = pool_devices.attach_devices(engine, pool_name, **{role: devices})
@@ -324,6 +328,25 @@ async def detach_pool_device(
 _POOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
 _LSBLK_FIELD = re.compile(r'(\w+)="([^"]*)"')
 MIN_PASSPHRASE_LENGTH = 12
+VDEV_TYPES = ("", "mirror", "raidz1", "raidz2", "raidz3")
+
+
+def layout_problem(vdev_type: str, *groups):
+    """
+    Devices and the vdev type reach zpool as several arguments, split on
+    whitespace, and the engine cannot refuse a leading '-' there as it does
+    for single values: the installer passes -f that way on purpose. So the
+    vdev type is one zpool knows and a device is one /dev path, or `-f`
+    among the devices would take a disk that belongs to another pool.
+    """
+    if vdev_type not in VDEV_TYPES:
+        return f"vdev_type must be empty or one of {', '.join(VDEV_TYPES[1:])}"
+    for device in (d for group in groups for d in group):
+        if (not device.startswith("/dev/")
+                or posixpath.normpath(device) != device
+                or any(c.isspace() or not c.isprintable() for c in device)):
+            return f"{device!r} is not a device path under /dev/"
+    return None
 
 
 @router.get("/devices")
@@ -375,6 +398,9 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
             "detail": "A pool name starts with a letter and holds letters, digits, _ . : -"})
     if not devices:
         return JSONResponse(status_code=422, content={"detail": "Select at least one device"})
+    problem = layout_problem(vdev_type, devices, cache, log)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
 
     seen = set()
     for role, group in (("devices", devices), ("cache_devices", cache), ("log_devices", log)):
