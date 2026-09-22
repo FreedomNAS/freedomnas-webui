@@ -12,6 +12,7 @@ depends=(
     'python'
     'python-fastapi'
     'uvicorn'
+    'python-websockets'
     'python-jinja'
     'python-pam'
     'python-yaml'

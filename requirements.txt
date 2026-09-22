@@ -1,10 +1,12 @@
-# What the WebUI needs to start. Two of these are not direct imports and are
+# What the WebUI needs to start. Three of these are not direct imports and are
 # the easiest to forget: jinja2 arrives through fastapi.templating, uvicorn is
-# how the supervisor launches the app. The distribution packages that
-# provide these are named in debian/control, PKGBUILD and the Gentoo ebuild;
-# this file is the list they all answer to.
+# how the supervisor launches the app, and websockets is what lets uvicorn
+# serve one. The distribution packages that provide these are named in
+# debian/control, PKGBUILD, the Gentoo ebuild and freedomnas-profiles'
+# packages/core.json; this file is the list they all answer to.
 fastapi
 uvicorn
+websockets      # uvicorn's WebSocket protocol: without it /ws/updates/terminal is a 404
 jinja2          # fastapi.templating, built at import time in api/main.py
 python-pam      # api/deps.py: authentication
 PyYAML          # configuration import/export
