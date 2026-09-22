@@ -92,7 +92,7 @@ async function loadUsers() {
             <th>Username</th>
             <th>Groups</th>
             <th>Shell</th>
-            <th class="col-actions advanced-only"></th>
+            <th class="col-actions"></th>
           </tr></thead>
           <tbody>
             ${d.users.map(renderUser).join('')}
@@ -114,9 +114,9 @@ function renderUser(u) {
       <td class="font-bold">${esc(u.username)} ${isSelf ? '<span class="badge badge-info" style="margin-left:4px">you</span>' : ''}</td>
       <td>${groups || '<span class="text-muted">—</span>'}</td>
       <td class="mono muted">${esc(u.shell || '/bin/bash')}</td>
-      <td class="col-actions advanced-only">
+      <td class="col-actions">
         <button class="btn btn-secondary btn-sm" data-action="password" data-user="${esc(u.username)}">Password</button>
-        ${!isSelf ? `<button class="btn btn-danger btn-sm" data-action="remove" data-user="${esc(u.username)}">Remove</button>` : ''}
+        ${!isSelf ? `<button class="btn btn-danger btn-sm advanced-only" data-action="remove" data-user="${esc(u.username)}">Remove</button>` : ''}
       </td>
     </tr>`;
 }

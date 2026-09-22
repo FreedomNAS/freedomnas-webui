@@ -75,3 +75,24 @@ def test_a_toast_shows_its_message_as_text():
     toast = toast.split("\n}", 1)[0]
     assert "${msg}" not in toast
     assert "textContent = msg" in toast
+
+
+# A dialog nested in another inherits its opacity: opening it catches every
+# click on the page while showing nothing. An unclosed <div> is enough.
+
+TEMPLATES = sorted(Path("frontend/templates").glob("*.html"))
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_divs_balance_and_no_dialog_sits_inside_another(template):
+    html = template.read_text()
+    open_divs = []
+    for tag in re.finditer(r"<div\b[^>]*>|</div>", html):
+        if tag.group().startswith("</"):
+            assert open_divs, f"extra </div> at offset {tag.start()}"
+            open_divs.pop()
+            continue
+        backdrop = "modal-backdrop" in tag.group()
+        assert not (backdrop and any(open_divs)), f"nested dialog: {tag.group()}"
+        open_divs.append(backdrop)
+    assert not open_divs, "unclosed <div>"
