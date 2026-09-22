@@ -52,6 +52,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     step = n;
     Object.values(steps).forEach(s => s && (s.hidden = true));
     if (steps[n]) steps[n].hidden = false;
+    document.querySelectorAll('.wizard-footer').forEach(f => f.hidden = f.id !== `footer-${n}`);
 
     document.querySelectorAll('.wizard-step').forEach(el => {
       const sn = parseInt(el.dataset.step);
@@ -88,6 +89,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (res.ok) {
         document.getElementById('step-3').hidden = true;
+        document.getElementById('footer-3').hidden = true;
         document.getElementById('step-done').hidden = false;
         return;
       }

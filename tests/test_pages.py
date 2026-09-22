@@ -96,3 +96,14 @@ def test_divs_balance_and_no_dialog_sits_inside_another(template):
         assert not (backdrop and any(open_divs)), f"nested dialog: {tag.group()}"
         open_divs.append(backdrop)
     assert not open_divs, "unclosed <div>"
+
+
+def test_the_hidden_attribute_wins_over_any_display_rule():
+    css = Path("frontend/static/css/main.css").read_text()
+    assert re.search(r"\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}", css)
+
+
+def test_the_setup_wizard_shows_only_the_current_steps_footer():
+    wizard = Path("frontend/static/js/setup.js").read_text()
+    show_step = wizard.split("function showStep(", 1)[1].split("\n  }", 1)[0]
+    assert ".wizard-footer" in show_step
