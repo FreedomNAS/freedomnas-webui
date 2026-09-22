@@ -1,53 +1,72 @@
-"""Authentication (PAM) and authorisation (the admin group), through HTTP."""
+"""Authentication (PAM), authorisation (the admin group) and the first-run guard."""
 
 from conftest import ACCOUNTS
 
 
-def test_no_credentials_is_401(client, engine):
-    status, _ = client.get("/api/users/", auth=None)
-    assert status == 401
+def test_no_credentials_is_401(anonymous, config):
+    assert anonymous.get("/api/users/").status == 401
 
 
 def test_a_wrong_password_is_401(client):
-    status, _ = client.get("/api/users/", auth=("admin", "wrong"))
-    assert status == 401
+    assert client.get("/api/users/", auth=("admin", "wrong")).status == 401
 
 
 def test_an_unknown_account_is_401(client):
-    status, _ = client.get("/api/users/", auth=("nobody", "whatever"))
-    assert status == 401
+    assert client.get("/api/users/", auth=("nobody", "whatever")).status == 401
 
 
 def test_a_valid_account_outside_the_admin_group_is_403(client, engine):
-    status, body = client.delete("/api/users/admin", auth=("mario", ACCOUNTS["mario"][0]))
-    assert status == 403
-    assert "administrator" in body["detail"]
-    actions = [c.args[:2] for c in engine.execute.call_args_list]
-    assert ("users", "delete") not in actions
+    r = client.delete("/api/users/admin", auth=("mario", ACCOUNTS["mario"][0]))
+    assert r.status == 403
+    assert "administrator" in r.body["detail"]
+    assert ("users", "delete") not in engine.actions()
+
+
+def test_the_admin_group_comes_from_the_profile(client, engine):
+    assert client.get("/api/users/").status == 200
+    lookup = engine.called("users", "list_groups")
+    assert lookup and lookup[-1].argv == ["id", "-nG", "admin"]
+
+
+def test_root_is_an_administrator_without_a_group_lookup(client, engine, monkeypatch):
+    monkeypatch.setitem(ACCOUNTS, "root", ("root-password", []))
+    assert client.get("/api/users/", auth=("root", "root-password")).status == 200
+    assert engine.called("users", "list_groups") == []
 
 
 def test_an_administrator_gets_through(client):
-    status, body = client.get("/api/users/")
-    assert status == 200
-    assert body == {"users": []}
+    r = client.get("/api/users/")
+    assert r.status == 200
+    assert r.body == {"users": []}
 
 
 def test_five_failures_lock_the_account_even_for_the_right_password(client):
     for _ in range(5):
-        assert client.get("/api/users/", auth=("admin", "wrong"))[0] == 401
-    status, _ = client.get("/api/users/")
-    assert status == 401
+        assert client.get("/api/users/", auth=("admin", "wrong")).status == 401
+    assert client.get("/api/users/").status == 401
 
 
 def test_a_lockout_is_per_account(client):
     for _ in range(5):
         client.get("/api/users/", auth=("mario", "wrong"))
-    status, _ = client.get("/api/users/")
-    assert status == 200
+    assert client.get("/api/users/").status == 200
 
 
-def test_the_api_waits_for_setup_before_anything_else(client, config):
-    config.is_initialized.return_value = False
-    status, body = client.get("/api/users/")
-    assert status == 503
-    assert "not initialized" in body["detail"]
+def test_a_success_resets_the_failure_count(client):
+    for _ in range(4):
+        client.get("/api/users/", auth=("admin", "wrong"))
+    assert client.get("/api/users/").status == 200
+    for _ in range(4):
+        client.get("/api/users/", auth=("admin", "wrong"))
+    assert client.get("/api/users/").status == 200
+
+
+def test_the_api_waits_for_setup(client, fresh_config):
+    r = client.get("/api/users/")
+    assert r.status == 503
+    assert "not initialized" in r.body["detail"]
+
+
+def test_status_and_setup_are_reachable_before_setup(anonymous, fresh_config):
+    assert anonymous.get("/api/system/status").status == 200
+    assert anonymous.get("/api/setup/status").status == 200

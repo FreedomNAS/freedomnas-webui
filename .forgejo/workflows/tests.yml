@@ -1,0 +1,42 @@
+name: tests
+
+# The suite serves the real app with uvicorn in front of the real engine and
+# the real Debian profile, so freedomnas-core and freedomnas-profiles are
+# checked out next to this repository, the way a development tree has them.
+# The Python packages come from requirements.txt through pip rather than
+# apt: the page routes need a FastAPI newer than some stable distributions
+# ship. cryptography is freedomnas-core's (keyslot wrapping); its
+# requirements.txt is not used because it pins a PyYAML that no longer
+# builds on current Python.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python and git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git python3 python3-venv
+
+      - name: Fetch freedomnas-core and freedomnas-profiles
+        run: |
+          for repo in freedomnas-core freedomnas-profiles; do
+            git clone --depth 1 --branch dev \
+              "https://codeberg.org/FreedomNAS/${repo}.git" "$(dirname "$PWD")/${repo}"
+          done
+
+      - name: Install the WebUI and test dependencies
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet -r requirements.txt \
+            cryptography pytest websockets
+
+      - name: Test
+        run: /tmp/venv/bin/python -m pytest tests/ -q

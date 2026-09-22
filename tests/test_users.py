@@ -10,15 +10,7 @@ import pytest
 
 
 def stdin_payloads(engine):
-    return [c.args[2] for c in engine.execute_with_stdin.call_args_list]
-
-
-def engine_actions(engine):
-    """Everything asked of the engine, minus the group lookup authentication makes."""
-    return [
-        c.args[:2] for c in engine.execute.call_args_list
-        if c.args[:2] != ("users", "list_groups")
-    ] + [c.args[:2] for c in engine.execute_with_stdin.call_args_list]
+    return [c.stdin for c in engine.calls if c.stdin is not None]
 
 
 @pytest.mark.parametrize("password", [
@@ -27,16 +19,16 @@ def engine_actions(engine):
     "12345678\0root",
 ])
 def test_a_password_with_a_control_character_never_reaches_chpasswd(client, engine, password):
-    status, body = client.post("/api/users/bob/password", {"password": password})
-    assert status == 422
-    assert "line breaks" in body["detail"]
+    r = client.post("/api/users/bob/password", {"password": password})
+    assert r.status == 422
+    assert "line breaks" in r.body["detail"]
     assert stdin_payloads(engine) == []
 
 
 def test_a_new_user_with_a_bad_password_is_not_created_at_all(client, engine):
-    status, _ = client.post("/api/users/", {"username": "carla", "password": "12345678\nroot:x"})
-    assert status == 422
-    assert engine_actions(engine) == []
+    r = client.post("/api/users/", {"username": "carla", "password": "12345678\nroot:x"})
+    assert r.status == 422
+    assert engine.actions() == []
 
 
 @pytest.mark.parametrize("path, body", [
@@ -44,43 +36,50 @@ def test_a_new_user_with_a_bad_password_is_not_created_at_all(client, engine):
     ("/api/users/a:b/password", {"password": "a long password"}),
 ])
 def test_a_colon_in_the_username_is_refused(client, engine, path, body):
-    status, response = client.post(path, body)
-    assert status == 422
-    assert "':'" in response["detail"]
-    assert engine_actions(engine) == []
+    r = client.post(path, body)
+    assert r.status == 422
+    assert "':'" in r.body["detail"]
+    assert engine.actions() == []
 
 
 def test_a_short_password_is_refused(client, engine):
-    status, body = client.post("/api/users/bob/password", {"password": "short"})
-    assert status == 422
-    assert "at least 8" in body["detail"]
+    r = client.post("/api/users/bob/password", {"password": "short"})
+    assert r.status == 422
+    assert "at least 8" in r.body["detail"]
     assert stdin_payloads(engine) == []
 
 
 def test_a_password_travels_on_stdin_as_one_line(client, engine):
-    status, _ = client.post("/api/users/bob/password", {"password": "a long: password"})
-    assert status == 200
-    assert stdin_payloads(engine) == ["bob:a long: password\n"]
-    call = engine.execute_with_stdin.call_args
-    assert call.args[:2] == ("users", "set_password_stdin")
-    assert "a long: password" not in repr(call.kwargs)
+    r = client.post("/api/users/bob/password", {"password": "a long: password"})
+    assert r.status == 200
+    [call] = engine.called("users", "set_password_stdin")
+    assert call.argv == ["chpasswd"]
+    assert call.stdin == "bob:a long: password\n"
+    assert "a long: password" not in call.command
 
 
 def test_creating_a_user_creates_it_then_sets_its_password(client, engine, config):
-    status, body = client.post(
+    r = client.post(
         "/api/users/",
-        {"username": "carla", "password": "a long password", "groups": ["wheel", "users"]},
+        {"username": "carla", "password": "a long password", "groups": ["sudo", "users"]},
     )
-    assert status == 200
-    assert body == {"username": "carla"}
-    create = [c for c in engine.execute.call_args_list if c.args[:2] == ("users", "create")]
-    assert len(create) == 1
-    assert create[0].kwargs["username"] == "carla"
-    assert create[0].kwargs["groups"] == "wheel,users"
-    assert "password" not in create[0].kwargs
+    assert r.status == 200
+    assert r.body == {"username": "carla"}
+    assert engine.actions() == [("users", "create"), ("users", "set_password_stdin")]
+    [create] = engine.called("users", "create")
+    assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "sudo,users", "carla"]
     assert stdin_payloads(engine) == ["carla:a long password\n"]
-    config.add_user.assert_called_once()
-    assert "password" not in config.add_user.call_args.args[0]
+    [saved] = config.get_users()
+    assert saved["username"] == "carla"
+    assert "password" not in saved
+    assert "a long password" not in config.config_path.read_text()
+
+
+def test_a_hostile_username_stays_one_argument(client, engine):
+    r = client.post("/api/users/", {"username": "x; reboot", "password": "a long password"})
+    assert r.status == 200
+    [create] = engine.called("users", "create")
+    assert create.argv[-1] == "x; reboot"
 
 
 @pytest.mark.parametrize("body, missing", [
@@ -88,13 +87,25 @@ def test_creating_a_user_creates_it_then_sets_its_password(client, engine, confi
     ({"username": "carla"}, "password"),
 ])
 def test_create_needs_username_and_password(client, engine, body, missing):
-    status, response = client.post("/api/users/", body)
-    assert status == 422
-    assert missing in response["detail"]
+    r = client.post("/api/users/", body)
+    assert r.status == 422
+    assert missing in r.body["detail"]
+
+
+def test_a_failing_useradd_is_reported_and_not_recorded(client, engine, config):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("users", "create")] = CommandExecutionError("useradd: user exists")
+    r = client.post("/api/users/", {"username": "carla", "password": "a long password"})
+    assert r.status == 500
+    assert "user exists" in r.body["detail"]
+    assert config.get_users() == []
+    assert stdin_payloads(engine) == []
 
 
 def test_deleting_a_user_goes_through_the_engine_and_the_config(client, engine, config):
-    status, _ = client.delete("/api/users/carla")
-    assert status == 200
-    assert ("users", "delete") in [c.args[:2] for c in engine.execute.call_args_list]
-    config.remove_user.assert_called_once_with("carla")
+    config.add_user({"username": "carla", "groups": []})
+    r = client.delete("/api/users/carla")
+    assert r.status == 200
+    [delete] = engine.called("users", "delete")
+    assert delete.argv == ["userdel", "-r", "carla"]
+    assert config.get_users() == []
