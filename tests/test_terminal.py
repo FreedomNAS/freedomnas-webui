@@ -92,7 +92,7 @@ def test_an_update_snapshots_every_pool_then_streams_topgrade(server, engine, co
     assert all(c.kwargs["snap_name"].startswith("pre-update-") for c in snapshots)
 
     assert launched == [["su", "-", "admin", "-c",
-                         "topgrade --config /etc/freedomnas/topgrade.toml"]]
+                         "topgrade --yes --config /etc/freedomnas/topgrade.toml"]]
     lines = [(m["stream"], m["line"]) for m in messages if "line" in m]
     assert lines[:2] == [("stdout", f"Snapshot created: tank@{snapshots[0].kwargs['snap_name']}"),
                          ("stdout", f"Snapshot created: backup@{snapshots[1].kwargs['snap_name']}")]
