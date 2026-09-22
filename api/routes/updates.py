@@ -15,6 +15,7 @@ background when that count has gone stale.
 
 import asyncio
 import json
+import pathlib
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -84,6 +85,46 @@ async def update_status(username: str = Depends(authenticate)):
     }
 
 
+def write_topgrade_config(engine, enabled_steps: list) -> str:
+    """
+    Write topgrade.toml for these steps and return where it went.
+
+    Called by /configure, and by the WebSocket handler when an update starts
+    on a system where nobody has been through /configure yet: without the
+    file, topgrade runs every step it knows — pip, cargo, flatpak and the
+    rest — instead of the three this page offers.
+    """
+    config_path = engine.get_profile_value("updates", "topgrade_config")
+
+    # topgrade rejects the whole file on one unknown field and silently
+    # falls back to its defaults, so every key here has to be one it
+    # actually knows: disable_tmux, [unstable] and [notifications] were
+    # none of them. `only` lives in [misc], and its value is a TOML array
+    # — json.dumps writes one, and quotes the step names properly.
+    # assume_yes because nobody is at a keyboard when the WebUI runs this.
+    toml_content = (
+        "[misc]\n"
+        "assume_yes = true\n"
+        "no_retry = true\n"
+        "run_in_tmux = false\n"
+        "skip_notify = true\n"
+        f"only = {json.dumps(enabled_steps)}\n"
+    )
+
+    # An edition may need to correct topgrade itself. Gentoo does: the
+    # default emerge_update_flags carry -a (--ask), and --yes does not
+    # remove it, so an unattended run would sit at a prompt forever.
+    try:
+        toml_content += "\n" + engine.get_profile_value("updates", "topgrade_extra_config")
+    except CommandTranslationError:
+        pass
+
+    path = pathlib.Path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(toml_content)
+    return config_path
+
+
 @router.post("/configure")
 async def configure_topgrade(body: dict, username: str = Depends(authenticate)):
     enabled_steps = body.get("enabled_steps", DEFAULT_STEPS)
@@ -91,34 +132,7 @@ async def configure_topgrade(body: dict, username: str = Depends(authenticate)):
     engine = get_engine()
     config = get_config()
     try:
-        config_path = engine.get_profile_value("updates", "topgrade_config")
-
-        # topgrade rejects the whole file on one unknown field and silently
-        # falls back to its defaults, so every key here has to be one it
-        # actually knows: disable_tmux, [unstable] and [notifications] were
-        # none of them. `only` lives in [misc], and its value is a TOML array
-        # — json.dumps writes one, and quotes the step names properly.
-        # assume_yes because nobody is at a keyboard when the WebUI runs this.
-        toml_content = (
-            "[misc]\n"
-            "assume_yes = true\n"
-            "no_retry = true\n"
-            "run_in_tmux = false\n"
-            "skip_notify = true\n"
-            f"only = {json.dumps(enabled_steps)}\n"
-        )
-
-        # An edition may need to correct topgrade itself. Gentoo does: the
-        # default emerge_update_flags carry -a (--ask), and --yes does not
-        # remove it, so an unattended run would sit at a prompt forever.
-        try:
-            toml_content += "\n" + engine.get_profile_value("updates", "topgrade_extra_config")
-        except CommandTranslationError:
-            pass
-
-        import pathlib
-        pathlib.Path(config_path).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(config_path).write_text(toml_content)
+        write_topgrade_config(engine, enabled_steps)
         config.configure_topgrade(enabled_steps)
         config.set("updates.topgrade.auto_snapshot", auto_snapshot)
     except (CommandExecutionError, CommandTranslationError, ConfigurationException, OSError) as exc:

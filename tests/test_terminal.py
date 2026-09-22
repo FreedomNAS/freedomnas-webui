@@ -94,12 +94,32 @@ def test_an_update_snapshots_every_pool_then_streams_topgrade(server, engine, co
     assert launched == [["su", "-", "admin", "-c",
                          "topgrade --yes --config /etc/freedomnas/topgrade.toml"]]
     lines = [(m["stream"], m["line"]) for m in messages if "line" in m]
-    assert lines[:2] == [("stdout", f"Snapshot created: tank@{snapshots[0].kwargs['snap_name']}"),
-                         ("stdout", f"Snapshot created: backup@{snapshots[1].kwargs['snap_name']}")]
+    # Nobody went through /configure here, so the defaults are written first.
+    assert lines[0][1].startswith("Wrote default configuration to ")
+    assert lines[1:3] == [("stdout", f"Snapshot created: tank@{snapshots[0].kwargs['snap_name']}"),
+                          ("stdout", f"Snapshot created: backup@{snapshots[1].kwargs['snap_name']}")]
     assert ("stdout", "upgrading") in lines
     assert ("stdout", "done") in lines
     assert ("stderr", "a warning") in lines
     assert messages[-1] == {"exit_code": 3}
+
+
+def test_the_default_configuration_is_written_once(server, engine, config, files, launched):
+    """
+    Without topgrade.toml, topgrade runs every step it knows. The first
+    update writes the defaults; a configuration already there is left alone.
+    """
+    path = files[("updates", "topgrade_config")]
+    session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    written = path.read_text()
+    assert "assume_yes = true" in written
+    assert '"system"' in written and '"containers"' in written
+    assert config.is_topgrade_configured()
+
+    path.write_text("[misc]\nonly = [\"system\"]\n")
+    messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert path.read_text() == "[misc]\nonly = [\"system\"]\n"
+    assert not any("Wrote default configuration" in m.get("line", "") for m in messages)
 
 
 def test_no_snapshot_when_auto_snapshot_is_off(server, engine, config, launched):

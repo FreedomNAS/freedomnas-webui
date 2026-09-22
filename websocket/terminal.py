@@ -25,13 +25,16 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import shlex
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
+from freedomnas.config import ConfigurationException
 from api.deps import get_config, get_engine, is_administrator, verify_credentials
+from api.routes.updates import DEFAULT_STEPS, write_topgrade_config
 
 AUTH_TIMEOUT_SECONDS = 10
 
@@ -117,6 +120,18 @@ async def updates_terminal(websocket: WebSocket):
         await _send(websocket, "stderr", "run_topgrade must be a single command, not a list")
         await _close(websocket, 1011)
         return
+
+    # An update can be started from the page without going through
+    # /configure first, and then there is no topgrade.toml: topgrade would
+    # run every step it knows instead of the three this page offers.
+    try:
+        config_path = engine.get_profile_value("updates", "topgrade_config")
+        if not os.path.exists(config_path):
+            write_topgrade_config(engine, DEFAULT_STEPS)
+            config.configure_topgrade(DEFAULT_STEPS)
+            await _send(websocket, "stdout", f"Wrote default configuration to {config_path}")
+    except (CommandTranslationError, ConfigurationException, OSError) as exc:
+        await _send(websocket, "stderr", f"Warning: could not write topgrade.toml: {exc}")
 
     # Pre-update snapshot (spec §7.7)
     if config.get("updates.topgrade.auto_snapshot", True):
