@@ -97,7 +97,7 @@ async function loadPools() {
       b.addEventListener('click', () => detachDevice(b.dataset.pool, b.dataset.detach)));
     // Pre-fill snapshot dataset datalist
     const dl = document.getElementById('ds-list');
-    if (dl) dl.innerHTML = d.pools.map(p => `<option value="${p.name}">`).join('');
+    if (dl) dl.innerHTML = d.pools.map(p => `<option value="${esc(p.name)}">`).join('');
   } catch (e) {
     el.innerHTML = errorState(e.message);
   }
@@ -298,7 +298,8 @@ function errorState(msg) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 

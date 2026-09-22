@@ -5,6 +5,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await loadInterfaces();
 
+  document.getElementById('iface-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-iface]');
+    if (btn) openEditIP(btn.dataset.iface, btn.dataset.addr);
+  });
+
   document.getElementById('form-ip')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn   = document.getElementById('btn-ip-submit');
@@ -71,7 +76,7 @@ function renderIface(i) {
           <span class="badge ${isUp ? 'badge-ok' : 'badge-muted'}">${isUp ? 'UP' : 'DOWN'}</span>
           ${!isLo ? `
             <button class="btn btn-secondary btn-sm advanced-only"
-              onclick="openEditIP('${esc(name)}', '${esc(addr[0] || '')}')">
+              data-iface="${esc(name)}" data-addr="${esc(addr[0] || '')}">
               Edit IP
             </button>` : ''}
         </div>
@@ -102,5 +107,6 @@ function emptyIface() {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }

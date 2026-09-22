@@ -13,6 +13,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindModalClose('modal-user');
   bindModalClose('modal-passwd');
 
+  document.getElementById('user-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-user]');
+    if (!btn) return;
+    if (btn.dataset.action === 'password') changePassword(btn.dataset.user);
+    if (btn.dataset.action === 'remove') deleteUser(btn.dataset.user);
+  });
+
   document.getElementById('form-passwd').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn      = document.getElementById('btn-passwd-submit');
@@ -108,8 +115,8 @@ function renderUser(u) {
       <td>${groups || '<span class="text-muted">—</span>'}</td>
       <td class="mono muted">${esc(u.shell || '/bin/bash')}</td>
       <td class="col-actions advanced-only">
-        <button class="btn btn-secondary btn-sm" onclick="changePassword('${esc(u.username)}')">Password</button>
-        ${!isSelf ? `<button class="btn btn-danger btn-sm" onclick="deleteUser('${esc(u.username)}')">Remove</button>` : ''}
+        <button class="btn btn-secondary btn-sm" data-action="password" data-user="${esc(u.username)}">Password</button>
+        ${!isSelf ? `<button class="btn btn-danger btn-sm" data-action="remove" data-user="${esc(u.username)}">Remove</button>` : ''}
       </td>
     </tr>`;
 }
@@ -140,5 +147,6 @@ function emptyUsers() {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }

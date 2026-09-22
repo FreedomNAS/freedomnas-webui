@@ -21,6 +21,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   bindModalClose('modal-share');
 
+  document.getElementById('panel-smb').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-share]');
+    if (btn) deleteSmb(btn.dataset.share);
+  });
+  document.getElementById('panel-nfs').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-share]');
+    if (btn) deleteNfs(btn.dataset.share);
+  });
+
   document.getElementById('form-share').addEventListener('submit', async (e) => {
     e.preventDefault();
     const type = document.getElementById('f-share-type').value;
@@ -64,7 +73,7 @@ async function loadSmb() {
                 <td class="muted">${esc((s.valid_users || []).join(', '))}</td>
                 <td>${s.read_only ? `<span class="badge badge-muted">Read Only</span>` : `<span class="badge badge-ok">Read/Write</span>`}</td>
                 <td class="col-actions">
-                  <button class="btn btn-danger btn-sm" onclick="deleteSmb('${esc(s.name)}')">Remove</button>
+                  <button class="btn btn-danger btn-sm" data-share="${esc(s.name)}">Remove</button>
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -91,7 +100,7 @@ async function loadNfs() {
                 <td class="muted">${esc(s.allowed_hosts)}</td>
                 <td class="mono text-sm muted">${esc(s.options || '')}</td>
                 <td class="col-actions">
-                  <button class="btn btn-danger btn-sm" onclick="deleteNfs('${esc(s.name)}')">Remove</button>
+                  <button class="btn btn-danger btn-sm" data-share="${esc(s.name)}">Remove</button>
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -160,5 +169,6 @@ function errState(msg) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }

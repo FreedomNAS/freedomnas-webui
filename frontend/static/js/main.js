@@ -84,7 +84,8 @@ function toast(msg, type = 'info', duration = 4000) {
   }
   const t = document.createElement('div');
   t.className = `toast toast-${type}`;
-  t.innerHTML = `${Icons[type] || Icons.info}<span>${msg}</span>`;
+  t.innerHTML = `${Icons[type] || Icons.info}<span></span>`;
+  t.querySelector('span').textContent = msg;
   stack.appendChild(t);
   setTimeout(() => {
     t.classList.add('out');

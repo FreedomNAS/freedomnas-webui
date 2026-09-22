@@ -1,5 +1,8 @@
 """Page routes, static files and the placeholders for later phases."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 PAGES = ["/auth/", "/setup/", "/dashboard/", "/storage/", "/shares/", "/network/",
@@ -41,3 +44,34 @@ def test_static_files_are_served(anonymous, config, path):
 ])
 def test_later_phases_answer_501(anonymous, config, method, path):
     assert anonymous.request(method, path).status == 501
+
+
+# ---------------------------------------------------------------------------
+# What the pages put into HTML
+#
+# The credentials sit in sessionStorage, so script injected into a page can
+# read the administrator's password. A name inside an inline handler is
+# decoded by the HTML parser before JavaScript reads it, so no escaping keeps
+# it inside its string: values travel in data-* attributes instead.
+# ---------------------------------------------------------------------------
+
+JS = sorted(Path("frontend/static/js").glob("*.js"))
+
+
+@pytest.mark.parametrize("script", JS, ids=lambda p: p.name)
+def test_no_inline_handler_carries_a_value(script):
+    assert not re.search(r"""\bon\w+=("[^"]*|'[^']*)\$\{""", script.read_text())
+
+
+@pytest.mark.parametrize("script", [p for p in JS if "function esc(" in p.read_text()],
+                         ids=lambda p: p.name)
+def test_esc_also_escapes_quotes(script):
+    body = script.read_text().split("function esc(", 1)[1].split("\n}", 1)[0]
+    assert "&quot;" in body and "&#39;" in body
+
+
+def test_a_toast_shows_its_message_as_text():
+    toast = Path("frontend/static/js/main.js").read_text().split("function toast(", 1)[1]
+    toast = toast.split("\n}", 1)[0]
+    assert "${msg}" not in toast
+    assert "textContent = msg" in toast
