@@ -17,6 +17,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch { /* proceed */ }
 
+  fillTimezones(document.getElementById('f-timezone'),
+                Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+
   let step = 1;
 
   const steps = {
@@ -129,4 +132,14 @@ function clearErr(id) {
   if (!el) return;
   el.style.borderColor = '';
   el.parentElement.querySelector('.field-err')?.remove();
+}
+
+// Every IANA zone the browser knows. A <datalist> would filter by what the
+// field already holds, so a field starting at "UTC" never showed the others.
+function fillTimezones(select, selected) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch { /* older browser */ }
+  if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+  if (selected && !zones.includes(selected)) zones = [selected, ...zones];
+  select.replaceChildren(...zones.map(z => new Option(z, z, false, z === selected)));
 }

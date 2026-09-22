@@ -46,15 +46,8 @@
       </div>
       <div class="form-group">
         <label class="form-label" for="f-timezone">Timezone</label>
-        <input id="f-timezone" class="input" type="text" value="UTC"
-               placeholder="Europe/Rome" list="tz-list">
-        <datalist id="tz-list">
-          <option value="UTC"><option value="Europe/Rome"><option value="Europe/London">
-          <option value="Europe/Berlin"><option value="Europe/Paris"><option value="America/New_York">
-          <option value="America/Los_Angeles"><option value="America/Chicago"><option value="Asia/Tokyo">
-          <option value="Asia/Shanghai"><option value="Australia/Sydney">
-        </datalist>
-        <span class="form-hint">IANA timezone identifier (e.g. Europe/Rome)</span>
+        <select id="f-timezone" class="select"></select>
+        <span class="form-hint">Preselected from this browser's timezone. Type a few letters to jump.</span>
       </div>
     </div>
     <div class="wizard-footer" id="footer-1">

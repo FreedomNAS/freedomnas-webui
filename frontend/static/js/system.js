@@ -3,6 +3,8 @@
 document.addEventListener('DOMContentLoaded', async () => {
   if (!initShared()) return;
 
+  const tzSelect = document.getElementById('f-timezone');
+  if (tzSelect) fillTimezones(tzSelect, 'UTC');
   await loadSystemInfo();
 
   document.getElementById('form-hostname').addEventListener('submit', async (e) => {
@@ -64,7 +66,7 @@ async function loadSystemInfo() {
     const h = document.getElementById('f-hostname');
     if (h) h.value = d.hostname || '';
     const t = document.getElementById('f-timezone');
-    if (t) t.value = d.timezone || 'UTC';
+    if (t) fillTimezones(t, d.timezone?.trim() || 'UTC');
     const edEl = document.getElementById('info-edition');
     if (edEl) edEl.textContent = d.edition || '—';
     const upEl = document.getElementById('info-uptime');
@@ -72,4 +74,14 @@ async function loadSystemInfo() {
   } catch (e) {
     toast(`Could not load system info: ${e.message}`, 'err');
   }
+}
+
+// Every IANA zone the browser knows. A <datalist> would filter by what the
+// field already holds, so a field starting at "UTC" never showed the others.
+function fillTimezones(select, selected) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch { /* older browser */ }
+  if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+  if (selected && !zones.includes(selected)) zones = [selected, ...zones];
+  select.replaceChildren(...zones.map(z => new Option(z, z, false, z === selected)));
 }

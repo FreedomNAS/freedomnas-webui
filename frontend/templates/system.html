@@ -57,12 +57,7 @@
     <form id="form-timezone" class="d-flex gap-3 items-end">
       <div class="form-group flex-1">
         <label class="form-label" for="f-timezone">Timezone</label>
-        <input id="f-timezone" class="input" type="text" placeholder="Europe/Rome" list="tz-list">
-        <datalist id="tz-list">
-          <option value="UTC"><option value="Europe/Rome"><option value="Europe/London">
-          <option value="Europe/Berlin"><option value="Europe/Paris"><option value="America/New_York">
-          <option value="America/Los_Angeles"><option value="Asia/Tokyo"><option value="Australia/Sydney">
-        </datalist>
+        <select id="f-timezone" class="select"></select>
       </div>
       <button type="submit" id="btn-timezone" class="btn btn-primary">Save</button>
     </form>
