@@ -4,6 +4,7 @@
 GET  /status   — health check (no auth, always accessible)
 GET  /info     — hostname, timezone, uptime
 POST /hostname — set hostname
+POST /timezone — set timezone
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
 GET  /config   — download this appliance's configuration
@@ -11,6 +12,8 @@ POST /config   — load a configuration back and apply it
 """
 
 import asyncio
+import re
+import zoneinfo
 
 import yaml
 from fastapi import APIRouter, Depends, Request
@@ -23,6 +26,23 @@ from freedomnas import shadow
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
+
+_ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z][A-Za-z0-9_+-]*)*$")
+
+
+def timezone_problem(timezone: str):
+    """
+    Several editions set the zone with `ln -sf /usr/share/zoneinfo/{timezone}
+    /etc/localtime`, so the name is a path there: every part starts with a
+    letter, which rules out `..` and options. Where this host has a zone
+    database, the name must also be in it.
+    """
+    if not _ZONE.match(timezone):
+        return f"{timezone!r} is not a timezone name such as Europe/Rome"
+    known = zoneinfo.available_timezones()
+    if known and timezone not in known:
+        return f"Unknown timezone: {timezone}"
+    return None
 
 
 @router.get("/status")
@@ -63,6 +83,24 @@ async def set_hostname(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"hostname": hostname}
+
+
+@router.post("/timezone")
+async def set_timezone(body: dict, username: str = Depends(authenticate)):
+    timezone = str(body.get("timezone", "")).strip()
+    if not timezone:
+        return JSONResponse(status_code=422, content={"detail": "timezone is required"})
+    problem = timezone_problem(timezone)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    engine = get_engine()
+    config = get_config()
+    try:
+        engine.execute("system", "timezone_set", timezone=timezone)
+        config.set("system.timezone", timezone)
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"timezone": timezone}
 
 
 @router.post("/reboot")

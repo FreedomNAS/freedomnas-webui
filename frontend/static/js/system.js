@@ -30,8 +30,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!tz)  { toast('Timezone is required.', 'warn'); return; }
     setLoading(btn, true, 'Saving…');
     try {
-      await apiJSON('POST', '/api/system/hostname', { hostname: document.getElementById('f-hostname').value.trim() });
-      toast('Timezone change requires engine support — saved to config.', 'info');
+      await apiJSON('POST', '/api/system/timezone', { timezone: tz });
+      toast(`Timezone set to ${tz}.`, 'ok');
     } catch (e) {
       toast(`Error: ${e.message}`, 'err');
     } finally {

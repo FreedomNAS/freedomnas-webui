@@ -1,5 +1,6 @@
 """/api/system/* — identity, power, and the configuration export/import."""
 
+import pytest
 import yaml
 
 from freedomnas.engine import CommandExecutionError
@@ -45,6 +46,39 @@ def test_hostname_is_set_on_the_system_then_in_the_config(client, engine, config
 def test_hostname_is_required(client, engine):
     assert client.post("/api/system/hostname", {"hostname": "  "}).status == 422
     assert engine.actions() == []
+
+
+def test_timezone_is_set_on_the_system_then_in_the_config(client, engine, config):
+    r = client.post("/api/system/timezone", {"timezone": " Asia/Tokyo "})
+    assert r.status == 200
+    assert r.body == {"timezone": "Asia/Tokyo"}
+    [call] = engine.called("system", "timezone_set")
+    assert call.argv == ["timedatectl", "set-timezone", "Asia/Tokyo"]
+    assert config.get("system.timezone") == "Asia/Tokyo"
+
+
+@pytest.mark.parametrize("timezone, message", [
+    ("", "required"),
+    ("../../../etc/shadow", "not a timezone name"),
+    ("Europe/../../etc/passwd", "not a timezone name"),
+    ("-u", "not a timezone name"),
+    ("Europe/Rome; reboot", "not a timezone name"),
+    ("Mars/Base", "Unknown timezone"),
+])
+def test_a_timezone_that_is_not_one_is_refused_before_anything_runs(client, engine, config,
+                                                                    timezone, message):
+    r = client.post("/api/system/timezone", {"timezone": timezone})
+    assert r.status == 422
+    assert message in r.body["detail"]
+    assert engine.actions() == []
+    assert config.get("system.timezone") != timezone
+
+
+def test_a_timezone_the_system_refuses_is_a_500_and_not_recorded(client, engine, config):
+    engine.outputs[("system", "timezone_set")] = CommandExecutionError("timedatectl failed")
+    r = client.post("/api/system/timezone", {"timezone": "Asia/Tokyo"})
+    assert r.status == 500
+    assert config.get("system.timezone") != "Asia/Tokyo"
 
 
 def test_a_hostile_hostname_stays_one_argument(client, engine):

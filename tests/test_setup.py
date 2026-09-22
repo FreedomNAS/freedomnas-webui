@@ -59,10 +59,19 @@ def test_initialize_runs_once(anonymous, engine, config):
 
 
 def test_a_failing_step_leaves_the_system_uninitialized(anonymous, engine, fresh_config):
-    engine.outputs[("system", "timezone_set")] = CommandExecutionError("unknown timezone")
-    r = anonymous.post("/api/setup/initialize", {"edition": "debian", "timezone": "Mars/Base"})
+    engine.outputs[("system", "timezone_set")] = CommandExecutionError("timedatectl failed")
+    r = anonymous.post("/api/setup/initialize", {"edition": "debian", "timezone": "Europe/Rome"})
     assert r.status == 500
-    assert "unknown timezone" in r.body["detail"]
+    assert "timedatectl failed" in r.body["detail"]
+    assert not fresh_config.is_initialized()
+
+
+@pytest.mark.parametrize("timezone", ["../../../etc/shadow", "-u", "Europe/Rome x", "Mars/Base"])
+def test_a_timezone_that_is_not_one_is_refused_before_anything_runs(anonymous, engine,
+                                                                    fresh_config, timezone):
+    r = anonymous.post("/api/setup/initialize", {"edition": "debian", "timezone": timezone})
+    assert r.status == 422
+    assert engine.calls == []
     assert not fresh_config.is_initialized()
 
 

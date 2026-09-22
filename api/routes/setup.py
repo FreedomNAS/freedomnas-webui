@@ -21,6 +21,7 @@ from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from freedomnas import pools, shadow
 from api.deps import get_config, get_engine
 from api.routes.storage import layout_problem
+from api.routes.system import timezone_problem
 
 logger = logging.getLogger("freedomnas.webui.setup")
 
@@ -148,6 +149,9 @@ async def initialize(body: dict):
 
     if not edition:
         return JSONResponse(status_code=422, content={"detail": "edition is required"})
+    problem = timezone_problem(timezone)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
 
     pool_cfg = body.get("pool")
     if pool_cfg:
