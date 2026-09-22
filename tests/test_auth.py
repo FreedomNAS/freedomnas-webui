@@ -1,5 +1,11 @@
 """Authentication (PAM), authorisation (the admin group) and the first-run guard."""
 
+import base64
+import urllib.error
+import urllib.request
+
+import pytest
+
 from conftest import ACCOUNTS
 
 
@@ -13,6 +19,23 @@ def test_a_wrong_password_is_401(client):
 
 def test_an_unknown_account_is_401(client):
     assert client.get("/api/users/", auth=("nobody", "whatever")).status == 401
+
+
+@pytest.mark.parametrize("authorization", [
+    None, "Basic !!!not-base64", "Basic " + base64.b64encode(b"no-colon").decode(),
+    "Bearer abc", "Basic " + base64.b64encode(b"admin:wrong").decode(),
+])
+def test_no_401_invites_the_browser_login_dialog(client, authorization):
+    """
+    A Basic challenge makes the browser open its own dialog in front of the
+    page and remember what is typed into it, sending it cross-site too.
+    """
+    headers = {"Authorization": authorization} if authorization else {}
+    req = urllib.request.Request(f"http://{client.host}/api/users/", headers=headers)
+    with pytest.raises(urllib.error.HTTPError) as err:
+        urllib.request.urlopen(req, timeout=10)
+    assert err.value.code == 401
+    assert err.value.headers["WWW-Authenticate"] == "FreedomNAS"
 
 
 def test_a_valid_account_outside_the_admin_group_is_403(client, engine):

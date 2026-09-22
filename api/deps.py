@@ -5,13 +5,14 @@ All route handlers obtain engine and config through these functions — never
 by instantiating them directly (spec §7.4).
 """
 
+import base64
+import binascii
 import logging
 import threading
 import time
 
 import pam
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import HTTPException, Request, status
 
 from freedomnas.engine import (
     CommandExecutionError,
@@ -23,7 +24,12 @@ from freedomnas.config import ConfigurationManager
 
 logger = logging.getLogger("freedomnas.webui.auth")
 
-security = HTTPBasic()
+# The credentials are Basic, but the challenge is not: a browser that sees
+# `WWW-Authenticate: Basic` on a 401 opens its own login dialog, leaves the
+# page's fetch waiting behind it, and afterwards sends whatever was typed there
+# on every request by itself — cross-site ones included. The page asks for the
+# password itself, so the scheme it announces is one no browser acts on.
+AUTH_SCHEME = "FreedomNAS"
 
 # Password guessing over the network is otherwise limited only by how fast PAM
 # answers. Five wrong answers inside a minute lock that username out for five.
@@ -106,24 +112,46 @@ def is_administrator(username: str) -> bool:
     return bool(admin_group) and admin_group in groups.split()
 
 
-def authenticate(
-    credentials: HTTPBasicCredentials = Depends(security),
-) -> str:
+def _unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": AUTH_SCHEME},
+    )
+
+
+def _basic_credentials(request: Request) -> tuple:
+    """
+    Read the Basic credentials here rather than through fastapi's HTTPBasic,
+    whose 401 carries `WWW-Authenticate: Basic` in every FastAPI version the
+    editions ship.
+    """
+    scheme, _, blob = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "basic":
+        raise _unauthorized("Not authenticated")
+    try:
+        decoded = base64.b64decode(blob.strip(), validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError):
+        raise _unauthorized("Not authenticated")
+    username, separator, password = decoded.partition(":")
+    if not separator:
+        raise _unauthorized("Not authenticated")
+    return username, password
+
+
+def authenticate(request: Request) -> str:
     """
     Verify credentials via PAM and require an administrator.
 
-    401 when the credentials are wrong, 403 when they are right but the
-    account is not in the edition's admin group.
+    401 when the credentials are missing or wrong, 403 when they are right
+    but the account is not in the edition's admin group.
     """
-    if not verify_credentials(credentials.username, credentials.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    if not is_administrator(credentials.username):
+    username, password = _basic_credentials(request)
+    if not verify_credentials(username, password):
+        raise _unauthorized("Invalid credentials")
+    if not is_administrator(username):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account is not an administrator",
         )
-    return credentials.username
+    return username
