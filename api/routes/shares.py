@@ -106,7 +106,18 @@ async def delete_smb(share_name: str, username: str = Depends(authenticate)):
 
 # ---------------------------------------------------------------------------
 # NFS
+#
+# An export is one line of /etc/exports, and its fields are separated by
+# whitespace: a value holding a space or a line break would not be one field
+# any more, it would be another field or another export. Those are refused
+# here; writing the line is the profile's business (nfs.export_add), since its
+# syntax is not the same on every edition.
 # ---------------------------------------------------------------------------
+
+def _export_field_problem(name: str, value: str):
+    if not value or any(c.isspace() or not c.isprintable() for c in value):
+        return f"{name} must be a single word with no spaces or control characters"
+    return None
 
 @router.get("/nfs")
 async def list_nfs(username: str = Depends(authenticate)):
@@ -126,14 +137,16 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
         )
 
     options = body.get("options", "rw,sync,no_subtree_check")
+    for field, value in (("path", path), ("allowed_hosts", allowed_hosts), ("options", options)):
+        problem = _export_field_problem(field, value)
+        if problem:
+            return JSONResponse(status_code=422, content={"detail": problem})
+
     engine = get_engine()
     config = get_config()
 
     try:
-        config_file = engine.get_profile_value("nfs", "config_file")
-        export_line = f"{path} {allowed_hosts}({options})\n"
-        with open(config_file, "a") as f:
-            f.write(export_line)
+        engine.execute("nfs", "export_add", path=path, clients=allowed_hosts, options=options)
         engine.execute("nfs", "exportfs_reload")
         config.add_nfs_share({
             "name": name,
@@ -141,7 +154,7 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
             "allowed_hosts": allowed_hosts,
             "options": options,
         })
-    except (CommandExecutionError, CommandTranslationError, ConfigurationException, OSError) as exc:
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"name": name, "path": path}
 
@@ -157,14 +170,9 @@ async def delete_nfs(share_name: str, username: str = Depends(authenticate)):
         return JSONResponse(status_code=404, content={"detail": f"NFS share '{share_name}' not found"})
 
     try:
-        config_file = engine.get_profile_value("nfs", "config_file")
-        path = entry["path"]
-        with open(config_file, "r") as f:
-            lines = f.readlines()
-        with open(config_file, "w") as f:
-            f.writelines(line for line in lines if not line.startswith(path + " "))
+        engine.execute("nfs", "export_remove", path=entry["path"])
         engine.execute("nfs", "exportfs_reload")
         config.remove_nfs_share(share_name)
-    except (CommandExecutionError, CommandTranslationError, ConfigurationException, OSError) as exc:
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": f"NFS share {share_name} deleted"}

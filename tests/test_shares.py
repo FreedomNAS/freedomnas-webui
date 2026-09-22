@@ -1,5 +1,7 @@
 """/api/shares/* — Samba usershares and NFS exports."""
 
+import subprocess
+
 import pytest
 
 
@@ -77,18 +79,27 @@ def test_an_smb_share_is_deleted(client, engine, config):
 # NFS
 # ---------------------------------------------------------------------------
 
+def apply_to(exports, call):
+    """Run a recorded profile command for real, against a copy of /etc/exports."""
+    subprocess.run(["sh", "-c", call.command.replace("/etc/exports", str(exports))], check=True)
+
+
 def test_an_nfs_share_needs_name_path_and_hosts(client, engine):
     r = client.post("/api/shares/nfs", {"name": "backup", "path": "/tank/backup"})
     assert r.status == 422
     assert engine.actions() == []
 
 
-def test_an_nfs_share_is_exported_reloaded_and_recorded(client, engine, config, files):
-    exports = files[("nfs", "config_file")]
+def test_an_nfs_share_is_exported_through_the_profile(client, engine, config, tmp_path):
+    exports = tmp_path / "exports"
     exports.write_text("/tank/other *(ro)\n")
     r = client.post("/api/shares/nfs", {"name": "backup", "path": "/tank/backup",
                                         "allowed_hosts": "192.168.1.0/24"})
     assert r.status == 200
+    assert engine.actions() == [("nfs", "export_add"), ("nfs", "exportfs_reload")]
+    [add] = engine.called("nfs", "export_add")
+    apply_to(exports, add)
+    apply_to(exports, add)
     assert exports.read_text() == (
         "/tank/other *(ro)\n/tank/backup 192.168.1.0/24(rw,sync,no_subtree_check)\n"
     )
@@ -96,16 +107,35 @@ def test_an_nfs_share_is_exported_reloaded_and_recorded(client, engine, config, 
     assert config.get_nfs_shares()[0]["allowed_hosts"] == "192.168.1.0/24"
 
 
-def test_an_nfs_share_is_removed_line_and_record(client, engine, config, files):
-    exports = files[("nfs", "config_file")]
+@pytest.mark.parametrize("field, value", [
+    ("allowed_hosts", "192.168.1.0/24\n/ *(rw,no_root_squash)"),
+    ("allowed_hosts", "10.0.0.1 *"),
+    ("options", "rw)\n/ *(rw"),
+    ("options", "rw no_root_squash"),
+    ("path", "/tank/my backup"),
+    ("path", "/tank/back\rup"),
+])
+def test_what_would_not_stay_one_export_is_refused(client, engine, config, field, value):
+    body = {"name": "backup", "path": "/tank/backup", "allowed_hosts": "192.168.1.0/24"}
+    body[field] = value
+    r = client.post("/api/shares/nfs", body)
+    assert r.status == 422
+    assert field in r.body["detail"]
+    assert engine.actions() == []
+    assert config.get_nfs_shares() == []
+
+
+def test_an_nfs_share_is_removed_line_and_record(client, engine, config, tmp_path):
+    exports = tmp_path / "exports"
     exports.write_text("/tank/backup 192.168.1.0/24(rw)\n/tank/backup2 *(ro)\n")
     config.add_nfs_share({"name": "backup", "path": "/tank/backup",
                           "allowed_hosts": "192.168.1.0/24", "options": "rw"})
     r = client.delete("/api/shares/nfs/backup")
     assert r.status == 200
+    assert engine.actions() == [("nfs", "export_remove"), ("nfs", "exportfs_reload")]
+    apply_to(exports, engine.called("nfs", "export_remove")[0])
     assert exports.read_text() == "/tank/backup2 *(ro)\n"
     assert config.get_nfs_shares() == []
-    assert ("nfs", "exportfs_reload") in engine.actions()
 
 
 def test_removing_an_unknown_nfs_share_is_404(client, engine):
