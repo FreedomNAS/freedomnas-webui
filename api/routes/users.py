@@ -22,16 +22,32 @@ router = APIRouter()
 
 
 MIN_PASSWORD_LENGTH = 8
+_CONTROL_CHARS = "\n\r\0"
+
+
+def _credentials_problem(username: str, password: str) -> str:
+    if ":" in username or any(c in username for c in _CONTROL_CHARS):
+        return "username may not contain ':' or control characters"
+    if any(c in password for c in _CONTROL_CHARS):
+        return "password may not contain line breaks or control characters"
+    return ""
 
 
 def _set_password(engine, target: str, password: str) -> None:
     """
     Set an account's password without it ever appearing in a command line.
 
+    Refuses what could end the payload's line early: chpasswd reads one
+    "user:password" per line, and a newline in the password would start
+    another one, for another account.
+
     The payload shape differs per OS — chpasswd wants "user:password", pw
     wants the password alone — so the profile carries it as
     users.password_stdin_format.
     """
+    problem = _credentials_problem(target, password)
+    if problem:
+        raise CommandTranslationError(problem)
     payload = engine.get_profile_value("users", "password_stdin_format")
     engine.execute_with_stdin(
         "users", "set_password_stdin",
@@ -60,6 +76,9 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
             status_code=422,
             content={"detail": f"password must be at least {MIN_PASSWORD_LENGTH} characters"},
         )
+    problem = _credentials_problem(new_user, password)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
 
     groups = body.get("groups", [])
     shell = body.get("shell", "/bin/bash")
@@ -100,6 +119,9 @@ async def set_user_password(target: str, body: dict, username: str = Depends(aut
             status_code=422,
             content={"detail": f"password must be at least {MIN_PASSWORD_LENGTH} characters"},
         )
+    problem = _credentials_problem(target, password)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
 
     engine = get_engine()
     try:
