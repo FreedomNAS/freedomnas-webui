@@ -4,6 +4,7 @@
    CUSTOM PROPERTIES
    ===================================================================== */
 :root {
+  color-scheme: dark;
   --sidebar-w: 220px;
   --topbar-h: 56px;
 
@@ -65,6 +66,7 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
   --sidebar-bg: #1e293b;
   --sidebar-text: #94a3b8;
   --sidebar-border: rgba(255,255,255,0.05);
@@ -555,6 +557,10 @@ code {
   background-position: right 10px center;
   padding-right: 30px;
 }
+
+/* The open list is drawn by the browser on its own background; the field's
+   near-transparent one would leave light text on a white list. */
+.select option { background: var(--card-bg); color: var(--text); }
 
 .textarea { min-height: 80px; resize: vertical; }
 
