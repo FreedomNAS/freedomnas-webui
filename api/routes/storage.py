@@ -51,13 +51,36 @@ async def list_pools(username: str = Depends(authenticate)):
     for line in stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 2:
-            entry = {"name": parts[0], "size": parts[1]}
+            entry = {"name": parts[0], "size": _bytes(parts[1])}
+            # `zpool list -Hp -o name,size,alloc,free,capacity,health`: sizes
+            # in bytes, capacity as a bare percentage. A profile that prints
+            # fewer columns still gives a name and a size.
+            if len(parts) >= 3:
+                entry["used"] = _bytes(parts[2])
+            if len(parts) >= 4:
+                entry["free"] = _bytes(parts[3])
+            if len(parts) >= 5:
+                entry["used_pct"] = _bytes(parts[4].rstrip("%"))
+            if len(parts) >= 6:
+                entry["health"] = parts[5]
             known = recorded.get(parts[0], {})
             for key in ("cache_devices", "log_devices", "vdev_type", "encrypted"):
                 if known.get(key):
                     entry[key] = known[key]
             pools.append(entry)
     return {"pools": pools}
+
+
+def _bytes(value: str):
+    """
+    `-p` prints exact byte counts, which the page formats itself. A profile
+    whose command lacks `-p` prints `3.6T`, and that goes through unchanged
+    rather than becoming a wrong number.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 @router.get("/datasets")

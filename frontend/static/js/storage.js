@@ -235,9 +235,9 @@ function renderPool(p) {
           <div class="progress-bar ${barClass}" style="width:${usedPct}%"></div>
         </div>` : ''}
       <div class="pool-stats">
-        <div class="pool-stat-item"><span class="pool-stat-label">Size</span><span class="pool-stat-value">${esc(p.size || '—')}</span></div>
-        <div class="pool-stat-item"><span class="pool-stat-label">Used</span><span class="pool-stat-value">${esc(p.used || '—')}</span></div>
-        <div class="pool-stat-item"><span class="pool-stat-label">Free</span><span class="pool-stat-value">${esc(p.free || '—')}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Size</span><span class="pool-stat-value">${poolSize(p.size)}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Used</span><span class="pool-stat-value">${poolSize(p.used)}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Free</span><span class="pool-stat-value">${poolSize(p.free)}</span></div>
       </div>
       <div class="advanced-only mt-3">
         ${attachedDevices(p, 'cache', 'Cache (L2ARC)')}
@@ -341,6 +341,14 @@ async function openPoolForm() {
     sel.innerHTML = '<option value="">None</option>' +
       free.map(d => `<option value="${esc(d.name)}">${esc(d.name)} — ${humanSize(d.size)}</option>`).join('');
   }
+}
+
+// `zpool list -p` reports exact byte counts, which are unreadable as they
+// stand; a profile without `-p` sends a string such as '3.6T' instead, and
+// that is already how it should be shown.
+function poolSize(value) {
+  if (value === undefined || value === null || value === '') return '—';
+  return typeof value === 'number' ? humanSize(value) : esc(value);
 }
 
 function humanSize(bytes) {

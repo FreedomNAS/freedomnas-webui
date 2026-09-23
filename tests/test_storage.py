@@ -13,14 +13,27 @@ from freedomnas.engine import CommandExecutionError
 # ---------------------------------------------------------------------------
 
 def test_pools_merge_what_zfs_says_with_what_the_config_recorded(client, engine, config):
-    engine.outputs[("zfs", "pool_list")] = "tank\t3.6T\nbackup\t1.8T\n"
+    engine.outputs[("zfs", "pool_list")] = (
+        "tank\t3958241161216\t1979120580608\t1979120580608\t50\tONLINE\n"
+        "backup\t1979120580608\t98956029030\t1880164551578\t5\tDEGRADED\n"
+    )
     config.add_pool({"name": "tank", "vdev_type": "mirror", "cache_devices": ["/dev/nvme0n1"]})
     r = client.get("/api/storage/pools")
     assert r.status == 200
     assert r.body == {"pools": [
-        {"name": "tank", "size": "3.6T", "cache_devices": ["/dev/nvme0n1"], "vdev_type": "mirror"},
-        {"name": "backup", "size": "1.8T"},
+        {"name": "tank", "size": 3958241161216, "used": 1979120580608,
+         "free": 1979120580608, "used_pct": 50, "health": "ONLINE",
+         "cache_devices": ["/dev/nvme0n1"], "vdev_type": "mirror"},
+        {"name": "backup", "size": 1979120580608, "used": 98956029030,
+         "free": 1880164551578, "used_pct": 5, "health": "DEGRADED"},
     ]}
+
+
+def test_a_profile_that_prints_only_name_and_size_still_works(client, engine):
+    """The page shows what it was given: '3.6T' is already readable."""
+    engine.outputs[("zfs", "pool_list")] = "tank\t3.6T\n"
+    r = client.get("/api/storage/pools")
+    assert r.body == {"pools": [{"name": "tank", "size": "3.6T"}]}
 
 
 def test_datasets_are_parsed_and_short_lines_skipped(client, engine):
