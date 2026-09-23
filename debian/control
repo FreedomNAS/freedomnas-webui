@@ -16,7 +16,7 @@ Depends: ${misc:Depends},
  python3-uvicorn,
  python3-websockets,
  python3-jinja2,
- python3-pam,
+ python3-pampy,
  python3-yaml,
  freedomnas-core,
  freedomnas-profiles

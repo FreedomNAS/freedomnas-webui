@@ -8,5 +8,7 @@ fastapi
 uvicorn
 websockets      # uvicorn's WebSocket protocol: without it /ws/updates/terminal is a 404
 jinja2          # fastapi.templating, built at import time in api/main.py
-python-pam      # api/deps.py: authentication
+python-pam      # api/deps.py: `import pam`. Debian's python3-pam is a
+                # different, older library whose module is PAM; the one
+                # that provides `pam` there is python3-pampy
 PyYAML          # configuration import/export
