@@ -1,6 +1,6 @@
 # Maintainer: FreedomNAS Team <dev@freedomnas.io>
 pkgname=freedomnas-webui
-pkgver=4.0.0
+pkgver=1.0
 pkgrel=1
 pkgdesc="FreedomNAS WebUI — FastAPI appliance interface"
 arch=('any')
