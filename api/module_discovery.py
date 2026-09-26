@@ -36,9 +36,10 @@ class CommunityModule(NamedTuple):
 
 def _default_modules_dir() -> Path:
     """Mirrors freedomnas-core's ModuleLoader._get_default_modules_dir()."""
+    here = Path(__file__).resolve().parent            # <install_root>/webui/api
     candidates = [
-        Path("/usr/lib/freedomnas/modules"),                                   # system install
-        Path(__file__).resolve().parent.parent.parent / "freedomnas-core" / "modules",  # dev sibling repo
+        here.parent.parent / "modules",                # system install
+        here.parent.parent / "freedomnas-core" / "modules",  # dev sibling repo
     ]
     for path in candidates:
         if path.exists() and path.is_dir():
