@@ -46,6 +46,7 @@ async def set_static_ip(logical_name: str, body: dict, username: str = Depends(a
         engine.execute(
             "network", "set_static_ip",
             conn_name=logical_name,
+            interface=logical_name,
             ip=body["ip"],
             cidr=body["cidr"],
             gateway=body["gateway"],
