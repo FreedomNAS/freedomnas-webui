@@ -390,10 +390,12 @@ async def list_devices(username: str = Depends(authenticate)):
                             for n in stdout.split()]}
 
     devices = []
+    parents = {}
     for line in stdout.splitlines():
         fields = dict(_LSBLK_FIELD.findall(line))
         if not fields.get("NAME"):
             continue
+        parents[fields["NAME"]] = fields.get("PKNAME", "")
         devices.append({
             "name": fields["NAME"],
             "size": int(fields.get("SIZE") or 0),
@@ -403,6 +405,19 @@ async def list_devices(username: str = Depends(authenticate)):
             "model": fields.get("MODEL", ""),
             "in_use": bool(fields.get("FSTYPE") or fields.get("MOUNTPOINT")),
         })
+
+    # A disk whose partitions hold the running system shows no filesystem of
+    # its own: it is in use all the same, and must not be offered for a pool.
+    busy = set()
+    for device in devices:
+        name = device["name"]
+        if device["in_use"]:
+            while parents.get(name):
+                name = parents[name]
+                busy.add(name)
+    for device in devices:
+        if device["name"] in busy:
+            device["in_use"] = True
     return {"devices": devices}
 
 

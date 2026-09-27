@@ -201,6 +201,17 @@ def test_devices_are_parsed_from_lsblk_and_marked_in_use(client, engine):
     ]}
 
 
+def test_a_disk_whose_partitions_are_in_use_is_in_use(client, engine):
+    engine.outputs[("media", "list_devices")] = (
+        'NAME="/dev/sda" PKNAME="" SIZE="21474836480" TYPE="disk" FSTYPE="" MOUNTPOINT="" MODEL="QEMU"\n'
+        'NAME="/dev/sda1" PKNAME="/dev/sda" SIZE="536870912" TYPE="part" FSTYPE="vfat" MOUNTPOINT="/boot/efi" MODEL=""\n'
+        'NAME="/dev/sda2" PKNAME="/dev/sda" SIZE="20000000000" TYPE="part" FSTYPE="zfs_member" MOUNTPOINT="" MODEL=""\n'
+        'NAME="/dev/sdb" PKNAME="" SIZE="4294967296" TYPE="disk" FSTYPE="" MOUNTPOINT="" MODEL="QEMU"\n'
+    )
+    devices = {d["name"]: d["in_use"] for d in client.get("/api/storage/devices").body["devices"]}
+    assert devices == {"/dev/sda": True, "/dev/sda1": True, "/dev/sda2": True, "/dev/sdb": False}
+
+
 # ---------------------------------------------------------------------------
 # Cache and log devices
 # ---------------------------------------------------------------------------
