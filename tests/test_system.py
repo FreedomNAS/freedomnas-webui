@@ -16,6 +16,7 @@ def test_info_reports_what_the_system_says(client, engine, config):
     config.set_hostname("nas")
     engine.outputs[("system", "uptime")] = "2026-09-22 08:00:00"
     engine.outputs[("system", "timezone_get")] = "Europe/Rome"
+    engine.outputs[("bootloader", "firmware_mode")] = "UEFI\n"
     r = client.get("/api/system/info")
     assert r.status == 200
     assert r.body == {
@@ -24,7 +25,18 @@ def test_info_reports_what_the_system_says(client, engine, config):
         "timezone": "Europe/Rome",
         "uptime_since": "2026-09-22 08:00:00",
         "initialized": True,
+        "version": None,
+        "init_system": "systemd",
+        "firmware": "UEFI",
     }
+
+
+def test_info_reports_the_installed_version(client, engine, monkeypatch, tmp_path):
+    version = tmp_path / "VERSION"
+    version.write_text("1.0+20260927.abc1234\n")
+    import api.routes.system as system_routes
+    monkeypatch.setattr(system_routes, "_VERSION_FILE", version)
+    assert client.get("/api/system/info").body["version"] == "1.0+20260927.abc1234"
 
 
 def test_info_reports_a_failing_command(client, engine):
@@ -140,3 +152,37 @@ def test_an_import_is_saved_then_applied(client, engine, config):
     assert config.get_hostname() == "restored"
     assert yaml.safe_load(config.config_path.read_text())["system"]["hostname"] == "restored"
     assert ("zfs", "pool_list") in engine.actions()
+
+
+def test_ssh_is_off_until_turned_on(client, engine, config):
+    assert client.get("/api/system/ssh").body == {"enabled": False, "service": "ssh"}
+
+
+def test_turning_ssh_on_enables_and_starts_it_then_records_it(client, engine, config):
+    r = client.post("/api/system/ssh", {"enabled": True})
+    assert r.status == 200 and r.body == {"enabled": True, "service": "ssh"}
+    assert engine.actions() == [("services", "enable"), ("services", "start")]
+    assert all(c.argv[-1] == "ssh" for c in engine.calls if c.category == "services")
+    assert config.get("system.ssh_enabled") is True
+    assert client.get("/api/system/ssh").body["enabled"] is True
+
+
+def test_turning_ssh_off_stops_and_disables_it(client, engine, config):
+    config.set("system.ssh_enabled", True)
+    r = client.post("/api/system/ssh", {"enabled": False})
+    assert r.status == 200
+    assert engine.actions() == [("services", "stop"), ("services", "disable")]
+    assert config.get("system.ssh_enabled") is False
+
+
+def test_a_failed_enable_is_not_recorded(client, engine, config):
+    engine.outputs[("services", "enable")] = CommandExecutionError("no such unit")
+    r = client.post("/api/system/ssh", {"enabled": True})
+    assert r.status == 500
+    assert not config.get("system.ssh_enabled")
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_ssh_wants_a_boolean(client, engine, value):
+    assert client.post("/api/system/ssh", {"enabled": value}).status == 422
+    assert engine.actions() == []

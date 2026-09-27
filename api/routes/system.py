@@ -6,6 +6,8 @@ GET  /info     — hostname, timezone, uptime, and what the documentation needs
                  to match this system: version, init system, firmware
 POST /hostname — set hostname
 POST /timezone — set timezone
+GET  /ssh      — whether SSH is enabled
+POST /ssh      — enable or disable SSH
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
 GET  /config   — download this appliance's configuration
@@ -104,6 +106,36 @@ async def set_hostname(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"hostname": hostname}
+
+
+@router.get("/ssh")
+async def ssh_status(username: str = Depends(authenticate)):
+    try:
+        service = get_engine().get_profile_value("system", "ssh_service")
+    except CommandTranslationError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"enabled": bool(get_config().get("system.ssh_enabled")), "service": service}
+
+
+@router.post("/ssh")
+async def set_ssh(body: dict, username: str = Depends(authenticate)):
+    if not isinstance(body.get("enabled"), bool):
+        return JSONResponse(status_code=422, content={"detail": "enabled must be true or false"})
+    enabled = body["enabled"]
+    engine = get_engine()
+    config = get_config()
+    try:
+        service = engine.get_profile_value("system", "ssh_service")
+        if enabled:
+            engine.execute("services", "enable", service_name=service)
+            engine.execute("services", "start", service_name=service)
+        else:
+            engine.execute("services", "stop", service_name=service, check=False)
+            engine.execute("services", "disable", service_name=service, check=False)
+        config.set("system.ssh_enabled", enabled)
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"enabled": enabled, "service": service}
 
 
 @router.post("/timezone")
