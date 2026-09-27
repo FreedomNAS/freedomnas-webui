@@ -29,9 +29,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
-      const res = await fetch('/api/system/info', {
-        headers: { 'Authorization': `Basic ${btoa(`${u}:${p}`)}` },
-      });
+      const headers = { 'Authorization': `Basic ${btoa(`${u}:${p}`)}` };
+      let res = await fetch('/api/system/info', { headers });
+      if (res.status === 503) res = await fetch('/api/setup/whoami', { headers });
 
       if (res.status === 401) {
         showError('Invalid username or password.');

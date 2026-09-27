@@ -175,7 +175,8 @@ def config(monkeypatch, tmp_path):
 @pytest.fixture
 def fresh_config(monkeypatch, tmp_path):
     """A configuration the setup wizard has not been through yet."""
-    manager = ConfigurationManager(str(tmp_path / "fresh.yaml"))
+    (tmp_path / "state").mkdir()
+    manager = ConfigurationManager(str(tmp_path / "state" / "config.yaml"))
     monkeypatch.setattr(deps, "_config", manager)
     return manager
 

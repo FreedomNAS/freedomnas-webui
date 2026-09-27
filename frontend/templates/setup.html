@@ -15,29 +15,53 @@
       <img src="/static/img/logo_cut.png" alt="FreedomNAS" width="40" height="40">
       <div class="wizard-header-text">
         <h1>First-Time Setup</h1>
-        <p>Configure your FreedomNAS system</p>
+        <p>Make this FreedomNAS yours</p>
       </div>
     </div>
 
     <div class="wizard-steps">
-      <div class="wizard-step active" data-step="1">
-        <div class="wizard-step-num">1</div>
-        <span>Identity</span>
-      </div>
+      <div class="wizard-step active" data-step="1"><div class="wizard-step-num">1</div><span>Administrator</span></div>
       <div class="wizard-step-divider"></div>
-      <div class="wizard-step" data-step="2">
-        <div class="wizard-step-num">2</div>
-        <span>Edition</span>
-      </div>
+      <div class="wizard-step" data-step="2"><div class="wizard-step-num">2</div><span>System</span></div>
       <div class="wizard-step-divider"></div>
-      <div class="wizard-step" data-step="3">
-        <div class="wizard-step-num">3</div>
-        <span>Review</span>
-      </div>
+      <div class="wizard-step" data-step="3"><div class="wizard-step-num">3</div><span>Storage</span></div>
+      <div class="wizard-step-divider"></div>
+      <div class="wizard-step" data-step="4"><div class="wizard-step-num">4</div><span>Configuration</span></div>
+      <div class="wizard-step-divider"></div>
+      <div class="wizard-step" data-step="5"><div class="wizard-step-num">5</div><span>Review</span></div>
     </div>
 
-    <!-- Step 1 -->
     <div id="step-1" class="wizard-body">
+      <div class="alert alert-warn">
+        <span>This system still has the password it was shipped with. Choose your own before anything else.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-admin-name">Administrator name</label>
+        <input id="f-admin-name" class="input" type="text" spellcheck="false" autocomplete="off">
+        <span class="form-hint" id="admin-name-hint">Leave empty to keep the current account.</span>
+      </div>
+      <div class="form-group" id="remove-default-group" hidden>
+        <label class="checkbox-group">
+          <input id="f-remove-default" type="checkbox">
+          <span id="remove-default-label">Remove the current account</span>
+        </label>
+        <span class="form-hint">If kept, it gets the new password too.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-admin-pass">New password</label>
+        <input id="f-admin-pass" class="input" type="password" autocomplete="new-password">
+        <span class="form-hint">At least 8 characters, different from the one you signed in with.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-admin-pass2">Repeat the new password</label>
+        <input id="f-admin-pass2" class="input" type="password" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="wizard-footer" id="footer-1">
+      <button id="btn-next-1" class="btn btn-primary">Continue</button>
+    </div>
+
+    <div id="step-2" class="wizard-body" hidden>
       <div class="form-group">
         <label class="form-label" for="f-hostname">Hostname</label>
         <input id="f-hostname" class="input" type="text" value="freedomnas"
@@ -47,61 +71,92 @@
       <div class="form-group">
         <label class="form-label" for="f-timezone">Timezone</label>
         <select id="f-timezone" class="select"></select>
-        <span class="form-hint">Preselected from this browser's timezone. Type a few letters to jump.</span>
-      </div>
-    </div>
-    <div class="wizard-footer" id="footer-1">
-      <button id="btn-next-1" class="btn btn-primary">Continue</button>
-    </div>
-
-    <!-- Step 2 -->
-    <div id="step-2" class="wizard-body" hidden>
-      <div class="form-group">
-        <label class="form-label" for="f-edition">Operating System Edition</label>
-        <select id="f-edition" class="select">
-          <option value="">— Select edition —</option>
-          <option value="debian">Debian</option>
-          <option value="freebsd">FreeBSD</option>
-          <option value="arch">Arch Linux</option>
-          <option value="gentoo">Gentoo</option>
-          <option value="artix">Artix Linux</option>
-          <option value="void">Void Linux</option>
-        </select>
-        <span class="form-hint" id="edition-detected">Choose the edition matching the OS this system runs.</span>
-      </div>
-      <div class="alert alert-info" style="margin-top:4px">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        <span>FreedomNAS detects the running OS by itself; the edition recorded here must match it and cannot be changed without re-running setup.</span>
+        <span class="form-hint">Preselected from this browser's timezone.</span>
       </div>
     </div>
     <div class="wizard-footer" id="footer-2" hidden>
       <button id="btn-back-2" class="btn btn-secondary">Back</button>
-      <button id="btn-next-2" class="btn btn-primary">Review</button>
+      <button id="btn-next-2" class="btn btn-primary">Continue</button>
     </div>
 
-    <!-- Step 3 — Review -->
     <div id="step-3" class="wizard-body" hidden>
-      <div class="card" style="padding:16px">
-        <table style="width:100%;font-size:0.875rem">
-          <tbody>
-            <tr><td class="text-muted" style="padding:6px 0;width:120px">Hostname</td><td id="summary-hostname" class="font-bold"></td></tr>
-            <tr><td class="text-muted" style="padding:6px 0">Timezone</td><td id="summary-timezone"></td></tr>
-            <tr><td class="text-muted" style="padding:6px 0">Edition</td><td id="summary-edition"></td></tr>
-          </tbody>
-        </table>
+      <div class="form-group">
+        <label class="checkbox-group">
+          <input id="f-create-pool" type="checkbox">
+          <span>Create a data pool on other disks</span>
+        </label>
+        <span class="form-hint">Pools you already have stay as they are. More pools can be created later from Storage.</span>
       </div>
-      <p id="init-error" class="text-err text-sm" hidden></p>
+      <div id="pool-form" hidden>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label class="form-label" for="f-pool-name">Pool name</label>
+            <input id="f-pool-name" class="input" type="text" value="tank" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="form-group" style="flex:1">
+            <label class="form-label" for="f-pool-layout">Layout</label>
+            <select id="f-pool-layout" class="select">
+              <option value="">Single disk / stripe — no redundancy</option>
+              <option value="mirror">Mirror — survives one disk</option>
+              <option value="raidz1">RAIDZ1 — survives one disk</option>
+              <option value="raidz2">RAIDZ2 — survives two</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Disks</label>
+          <div id="pool-devices" class="device-list"></div>
+          <span class="form-hint">Everything on the selected disks is destroyed.</span>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-group">
+            <input id="f-pool-encrypt" type="checkbox">
+            <span>Encrypt this pool</span>
+          </label>
+        </div>
+        <div class="form-group" id="pool-passphrase-group" hidden>
+          <label class="form-label" for="f-pool-passphrase">Master passphrase</label>
+          <input id="f-pool-passphrase" class="input" type="password" autocomplete="new-password">
+          <span class="form-hint">At least 12 characters. Lose it and the pool is unreadable.</span>
+        </div>
+      </div>
     </div>
     <div class="wizard-footer" id="footer-3" hidden>
       <button id="btn-back-3" class="btn btn-secondary">Back</button>
-      <button id="btn-initialize" class="btn btn-primary">Initialize System</button>
+      <button id="btn-next-3" class="btn btn-primary">Continue</button>
     </div>
 
-    <!-- Done -->
+    <div id="step-4" class="wizard-body" hidden>
+      <p class="text-sm" style="margin-bottom:12px">
+        FreedomNAS keeps its configuration — users, shares, settings — on a pool.
+        On a data pool it survives reinstalling or reflashing the system disk:
+        the next boot finds it there and restores the system.
+      </p>
+      <div id="state-pools" class="device-list"></div>
+    </div>
+    <div class="wizard-footer" id="footer-4" hidden>
+      <button id="btn-back-4" class="btn btn-secondary">Back</button>
+      <button id="btn-next-4" class="btn btn-primary">Review</button>
+    </div>
+
+    <div id="step-5" class="wizard-body" hidden>
+      <div class="card" style="padding:16px">
+        <table style="width:100%;font-size:0.875rem">
+          <tbody id="summary"></tbody>
+        </table>
+      </div>
+      <p class="text-muted text-sm mt-2">SSH stays off. It can be turned on under System at the Advanced level.</p>
+      <p id="init-error" class="text-err text-sm" hidden></p>
+    </div>
+    <div class="wizard-footer" id="footer-5" hidden>
+      <button id="btn-back-5" class="btn btn-secondary">Back</button>
+      <button id="btn-initialize" class="btn btn-primary">Apply</button>
+    </div>
+
     <div id="step-done" class="wizard-body" hidden style="text-align:center;padding:40px 28px">
       <div style="font-size:2.5rem;margin-bottom:12px">✓</div>
-      <h2 style="color:var(--ok)">System initialized</h2>
-      <p class="text-muted mt-2" style="font-size:0.875rem">FreedomNAS is ready. Sign in to continue.</p>
+      <h2 style="color:var(--ok)">FreedomNAS is ready</h2>
+      <p class="text-muted mt-2" style="font-size:0.875rem">Sign in again with your new password.</p>
       <button id="btn-go-auth" class="btn btn-primary mt-6">Sign In</button>
     </div>
 

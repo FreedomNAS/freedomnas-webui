@@ -39,6 +39,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  const ssh = document.getElementById('f-ssh');
+  if (ssh) {
+    apiJSON('GET', '/api/system/ssh').then(d => { ssh.checked = !!d.enabled; }).catch(() => {});
+    ssh.addEventListener('change', async () => {
+      const wanted = ssh.checked;
+      ssh.disabled = true;
+      try {
+        await apiJSON('POST', '/api/system/ssh', { enabled: wanted });
+        toast(wanted ? 'SSH is on.' : 'SSH is off.', 'ok');
+      } catch (e) {
+        ssh.checked = !wanted;
+        toast(`Error: ${e.message}`, 'err');
+      } finally {
+        ssh.disabled = false;
+      }
+    });
+  }
+
   document.getElementById('btn-reboot')?.addEventListener('click', async () => {
     if (!await confirm('Reboot System', 'The system will reboot. All active sessions will be disconnected.', 'Reboot')) return;
     try {

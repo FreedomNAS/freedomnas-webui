@@ -1,56 +1,40 @@
 """
-/api/setup/* — first-run wizard (always accessible, spec §7.2).
+/api/setup/* — first-run wizard (spec §7.2).
 
-These routes are exempt from the first-run guard middleware.
+These routes are exempt from the first-run guard middleware. All but
+/status need an administrator's credentials: on a system installed from an
+image those are the ones it shipped with, which the wizard replaces.
 
 GET  /status      — whether the system is initialized
-POST /initialize  — set hostname, write smb.conf usershare stanza, optionally
-                     create an encrypted ZFS pool, mark initialized
-POST /topgrade    — configure topgrade (can also be called post-setup)
+GET  /whoami      — who the credentials belong to (sign-in before setup)
+GET  /devices     — block devices, for the data pool
+GET  /pools       — imported pools, for where the configuration lives
+POST /initialize  — administrator, hostname, timezone, optional data pool,
+                     the pool that holds .freedomnas; marks initialized
 """
 
 import logging
+import re
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
-from freedomnas import pools, shadow
-from api.deps import get_config, get_engine
-from api.routes.storage import layout_problem
+from freedomnas import shadow
+from api.deps import _basic_credentials, authenticate, get_config, get_engine
+from api.routes import storage
 from api.routes.system import timezone_problem
+from api.routes.users import MIN_PASSWORD_LENGTH, _credentials_problem, _set_password
 
 logger = logging.getLogger("freedomnas.webui.setup")
 
 router = APIRouter()
 
-MIN_PASSPHRASE_LENGTH = 12
-
-
-def _validate_pool_cfg(pool_cfg: dict) -> Optional[str]:
-    """Return an error message if pool_cfg is invalid, else None."""
-    if not pool_cfg.get("name", "").strip():
-        return "pool.name is required"
-    if not pool_cfg.get("devices"):
-        return "pool.devices must be a non-empty list"
-    if len(pool_cfg.get("master_passphrase", "")) < MIN_PASSPHRASE_LENGTH:
-        return f"pool.master_passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"
-    problem = layout_problem(
-        pool_cfg.get("vdev_type", "").strip(),
-        *(pool_cfg.get(role) or [] for role in ("devices", "cache_devices", "log_devices")),
-    )
-    if problem:
-        return f"pool: {problem}"
-
-    data = set(pool_cfg.get("devices") or [])
-    for role in ("cache_devices", "log_devices"):
-        overlap = data & set(pool_cfg.get(role) or [])
-        if overlap:
-            return f"pool.{role} cannot reuse a data device: {', '.join(sorted(overlap))}"
-    return None
+_USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
 def _prepare_usershares(engine) -> None:
@@ -80,55 +64,45 @@ def _prepare_usershares(engine) -> None:
     engine.execute("samba", "usershare_prepare", path=usershare_path)
 
 
-def _provision_encrypted_pool(engine, config, pool_cfg: dict) -> None:
+def _admin_problem(admin: dict, login: str, login_password: str) -> Optional[str]:
+    name = (admin.get("username") or "").strip() or login
+    password = admin.get("password") or ""
+    if not _USERNAME.match(name):
+        return "The administrator's name starts with a lowercase letter and holds lowercase letters, digits, _ and -"
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"The administrator's password must be at least {MIN_PASSWORD_LENGTH} characters"
+    if password == login_password:
+        return "Choose a new password: the one this system started with cannot stay"
+    return _credentials_problem(name, password) or None
+
+
+def _pool_names(engine) -> list:
+    stdout, _ = engine.execute("zfs", "pool_list")
+    return [line.split("\t")[0] for line in stdout.splitlines() if line.strip()]
+
+
+def _set_up_admin(engine, config, admin: dict, login: str) -> str:
     """
-    Create the encrypted pool described by pool_cfg (already validated by
-    _validate_pool_cfg) and record its non-secret metadata in config.yaml.
-    Never persists the passphrase, the raw ZFS key, or the USB key bytes --
-    those live only in the wrapped keyslot file (see
-    freedomnas.keymgmt.KeyslotStore).
+    The administrator the system keeps. A blank name keeps the account the
+    wizard was opened with; its password is replaced either way. With a new
+    name, the old account is removed if asked, and otherwise given the new
+    password too, so the one the image shipped with works nowhere.
     """
-    pool_name = pool_cfg["name"].strip()
-    vdev_type = pool_cfg.get("vdev_type", "").strip()
-    devices = pool_cfg["devices"]
-    master_passphrase = pool_cfg["master_passphrase"]
-    usb_devices = pool_cfg.get("usb_devices", [])
-
-    PoolProvisioner(engine).create_encrypted_pool(
-        pool_name=pool_name,
-        vdev_type=vdev_type,
-        devices=" ".join(devices),
-        master_passphrase=master_passphrase,
-        usb_devices=usb_devices,
-    )
-
-    # Cache and log come after the pool exists, on purpose: they hold no data,
-    # and an SSD that will not attach must not take the new pool down with it.
-    attached = pools.attach_devices(
-        engine,
-        pool_name,
-        cache=pool_cfg.get("cache_devices"),
-        log=pool_cfg.get("log_devices"),
-    )
-
-    # A pool carries the identity of the appliance too: the configuration's
-    # shadow copy is what a reinstall onto a blank disk finds waiting here.
-    try:
-        shadow.ensure_dataset(engine, pool_name)
-    except (CommandExecutionError, CommandTranslationError) as exc:
-        # A pool without its shadow dataset is still a working pool, so this
-        # does not fail the setup — but it is not swallowed either.
-        logger.warning("No shadow dataset on %s: %s", pool_name, exc)
-
-    config.add_pool({
-        "name": pool_name,
-        "vdev_type": vdev_type,
-        "encrypted": True,
-        "usb_keyslot_devices": len(usb_devices),
-        "cache_devices": attached["cache"],
-        "log_devices": attached["log"],
-    })
-    return attached
+    name = (admin.get("username") or "").strip() or login
+    password = admin["password"]
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    if name != login:
+        engine.execute("users", "create", username=name, groups=sudo_group,
+                       shell="/bin/bash", uid="", gid="")
+    _set_password(engine, name, password)
+    config.add_user({"username": name, "groups": [sudo_group], "admin": True})
+    if name != login:
+        if admin.get("remove_default"):
+            engine.execute("users", "delete", username=login)
+        else:
+            _set_password(engine, login, password)
+            config.add_user({"username": login, "groups": [sudo_group], "admin": True})
+    return name
 
 
 @router.get("/status")
@@ -141,62 +115,95 @@ async def setup_status():
     }
 
 
+@router.get("/whoami")
+async def whoami(username: str = Depends(authenticate)):
+    return {"username": username}
+
+
+@router.get("/devices")
+async def setup_devices(username: str = Depends(authenticate)):
+    return await storage.list_devices(username=username)
+
+
+@router.get("/pools")
+async def setup_pools(username: str = Depends(authenticate)):
+    listed = await storage.list_pools(username=username)
+    if isinstance(listed, JSONResponse):
+        return listed
+    try:
+        root, _ = get_engine().execute("zfs", "dataset_at_path", path="/", check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        root = ""
+    return {**listed, "system_pool": root.strip().split("/", 1)[0] or None}
+
+
 @router.post("/initialize")
-async def initialize(body: dict):
-    hostname = body.get("hostname", "freedomnas").strip()
-    timezone = body.get("timezone", "UTC").strip()
-    edition = body.get("edition", "").strip()
-
-    if not edition:
-        return JSONResponse(status_code=422, content={"detail": "edition is required"})
-    problem = timezone_problem(timezone)
-    if problem:
-        return JSONResponse(status_code=422, content={"detail": problem})
-
-    pool_cfg = body.get("pool")
-    if pool_cfg:
-        error = _validate_pool_cfg(pool_cfg)
-        if error:
-            return JSONResponse(status_code=422, content={"detail": error})
-
+async def initialize(body: dict, request: Request, username: str = Depends(authenticate)):
     engine = get_engine()
     config = get_config()
-
-    if edition not in engine.SUPPORTED_OS:
-        return JSONResponse(status_code=422, content={
-            "detail": f"Unknown edition '{edition}'. Supported: {', '.join(engine.SUPPORTED_OS)}"})
-    if edition != engine.os_type:
-        return JSONResponse(status_code=422, content={
-            "detail": f"This system runs the {engine.os_type} edition, not {edition}"})
 
     if config.is_initialized():
         return JSONResponse(status_code=409, content={"detail": "System already initialized"})
 
+    hostname = (body.get("hostname") or "freedomnas").strip()
+    timezone = (body.get("timezone") or "UTC").strip()
+    edition = (body.get("edition") or engine.os_type).strip()
+    admin = body.get("admin") or {}
+    pool_cfg = body.get("pool")
+    state_pool = (body.get("state_pool") or "").strip()
+
+    if edition != engine.os_type:
+        return JSONResponse(status_code=422, content={
+            "detail": f"This system runs the {engine.os_type} edition, not {edition}"})
+    if not _HOSTNAME.match(hostname):
+        return JSONResponse(status_code=422, content={
+            "detail": "The hostname holds letters, digits and hyphens only"})
+    problem = timezone_problem(timezone)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    _, login_password = _basic_credentials(request)
+    problem = _admin_problem(admin, username, login_password)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    if not state_pool:
+        return JSONResponse(status_code=422, content={
+            "detail": "Choose the pool that keeps FreedomNAS's configuration"})
+
     try:
-        # Set hostname
+        pools = _pool_names(engine)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    new_pool = (pool_cfg or {}).get("name", "").strip() if pool_cfg else ""
+    if state_pool not in pools and state_pool != new_pool:
+        return JSONResponse(status_code=422, content={"detail": f"No pool named {state_pool}"})
+
+    if pool_cfg:
+        created = await storage.create_pool(pool_cfg, username=username)
+        if isinstance(created, JSONResponse):
+            return created
+
+    try:
         engine.execute("system", "hostname_set", hostname=hostname)
         config.set_hostname(hostname)
-
-        # Set timezone
         engine.execute("system", "timezone_set", timezone=timezone)
         config.set("system.timezone", timezone)
-
         _prepare_usershares(engine)
-
-        # Optional: create an encrypted ZFS pool as part of first-run setup
-        if pool_cfg:
-            _provision_encrypted_pool(engine, config, pool_cfg)
-
-        # Mark initialized
+        admin_name = _set_up_admin(engine, config, admin, username)
+        config.set("system.ssh_enabled", False)
         config.mark_initialized(edition=edition, initialized_by="webui")
-
+        dataset = shadow.activate(engine, state_pool, state=Path(config.config_path).parent)
     except (
         CommandExecutionError,
         CommandTranslationError,
         ConfigurationException,
-        KeyManagementError,
         OSError,
     ) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-    return {"detail": "System initialized", "hostname": hostname, "edition": edition}
+    return {
+        "detail": "System initialized",
+        "hostname": hostname,
+        "edition": edition,
+        "admin": admin_name,
+        "state_dataset": dataset,
+    }
