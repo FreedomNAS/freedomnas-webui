@@ -229,7 +229,37 @@ async function loadEditionBadge() {
   try {
     const d = await apiJSON('GET', '/api/system/info');
     el.textContent = `${d.edition || ''} edition`;
+    saveDocsContext(d);
   } catch { /* ignore */ }
+}
+
+// ── Documentation ─────────────────────────────────────────────────────────────
+function saveDocsContext(info) {
+  const context = {
+    version: info.version || null,
+    edition: info.edition || null,
+    init_system: info.init_system || null,
+    firmware: info.firmware || null,
+  };
+  try { localStorage.setItem('fnas_docs_context', JSON.stringify(context)); } catch { /* ignore */ }
+}
+
+const DOCS_PAGES = {
+  '/dashboard/': 'user-guide/dashboard/',
+  '/storage/':   'user-guide/storage/',
+  '/shares/':    'user-guide/shares/',
+  '/network/':   'user-guide/network/',
+  '/users/':     'user-guide/users/',
+  '/updates/':   'user-guide/updates/',
+  '/system/':    'user-guide/system/',
+  '/setup/':     'getting-started/first-run/',
+};
+
+function setHelpLink() {
+  const btn = document.getElementById('btn-help');
+  if (!btn) return;
+  const page = DOCS_PAGES[location.pathname] || DOCS_PAGES[`${location.pathname}/`];
+  btn.href = `/docs/${page || ''}`;
 }
 
 // ── User badge ────────────────────────────────────────────────────────────────
@@ -254,6 +284,7 @@ function initShared() {
   UILevel.apply();
   Sidebar.init();
   markActiveNav();
+  setHelpLink();
   loadUserBadge();
   loadEditionBadge();
   updateThemeIcon();

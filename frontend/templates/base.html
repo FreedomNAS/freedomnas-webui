@@ -53,6 +53,15 @@
     <polyline points="16 17 21 12 16 7"/>
     <line x1="21" y1="12" x2="9" y2="12"/>
   </symbol>
+  <symbol id="icon-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
+  </symbol>
+  <symbol id="icon-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+    <line x1="12" y1="17" x2="12.01" y2="17"/>
+  </symbol>
 </svg>
 
 <div class="app-layout">
@@ -98,6 +107,10 @@
     </nav>
 
     <div class="sidebar-bottom">
+      <a href="/docs/" class="nav-item" target="_blank" rel="noopener" id="nav-docs">
+        <svg><use href="#icon-book"/></svg>
+        <span class="nav-item-label">Documentation</span>
+      </a>
       <button class="nav-item w-full" id="btn-logout" title="Sign out">
         <svg><use href="#icon-logout"/></svg>
         <span class="nav-item-label">Sign Out</span>
@@ -125,6 +138,10 @@
           <option value="advanced">Advanced</option>
           <option value="expert">Expert</option>
         </select>
+
+        <a class="topbar-btn" id="btn-help" href="/docs/" target="_blank" rel="noopener" aria-label="Help for this page" title="Help for this page">
+          <svg><use href="#icon-help"/></svg>
+        </a>
 
         <button class="topbar-btn" id="btn-theme" aria-label="Toggle theme" title="Toggle theme">
           <!-- filled by JS -->

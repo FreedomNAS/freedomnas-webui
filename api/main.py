@@ -12,9 +12,10 @@ Responsibilities:
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -34,7 +35,13 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="FreedomNAS WebUI", version="0.2.0", lifespan=lifespan)
+app = FastAPI(
+    title="FreedomNAS WebUI",
+    version="0.2.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
 
 # Community modules (nextcloud, docker, ...) ship their own api_routes.py +
 # frontend/ under modules/<id>/ — discovered here so mounting them never
@@ -121,6 +128,49 @@ for _mod in _community_modules:
             f"/static/modules/{_mod.id}",
             StaticFiles(directory=str(_mod.static_dir)),
             name=f"static_{_mod.id}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Documentation
+# ---------------------------------------------------------------------------
+
+def _docs_dir():
+    here = Path(__file__).resolve().parent
+    for path in (
+        here.parent.parent / "docs",
+        here.parent.parent / "freedomnas-docs" / "site",
+    ):
+        if (path / "index.html").is_file():
+            return path
+    return None
+
+
+_DOCS_DIR = _docs_dir()
+
+
+@app.get("/docs")
+async def docs_root():
+    return RedirectResponse("/docs/")
+
+
+if _DOCS_DIR:
+    app.mount("/docs", StaticFiles(directory=str(_DOCS_DIR), html=True), name="docs")
+else:
+    @app.get("/docs/{path:path}")
+    async def docs_missing(path: str = ""):
+        return HTMLResponse(
+            status_code=404,
+            content=(
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<title>Documentation not installed</title></head>"
+                "<body style='font-family:sans-serif;max-width:40em;margin:3em auto;padding:0 1em'>"
+                "<h1>Documentation not installed</h1>"
+                "<p>This system has no offline copy of the FreedomNAS documentation. "
+                "It comes with the <code>freedomnas-docs</code> package.</p>"
+                "<p><a href='/dashboard/'>Back to the dashboard</a></p></body></html>"
+            ),
         )
 
 

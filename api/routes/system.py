@@ -2,7 +2,8 @@
 /api/system/* — system identity, status, and power management.
 
 GET  /status   — health check (no auth, always accessible)
-GET  /info     — hostname, timezone, uptime
+GET  /info     — hostname, timezone, uptime, and what the documentation needs
+                 to match this system: version, init system, firmware
 POST /hostname — set hostname
 POST /timezone — set timezone
 POST /reboot   — reboot the system
@@ -14,6 +15,7 @@ POST /config   — load a configuration back and apply it
 import asyncio
 import re
 import zoneinfo
+from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, Request
@@ -28,6 +30,7 @@ from api.deps import authenticate, get_config, get_engine
 router = APIRouter()
 
 _ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z][A-Za-z0-9_+-]*)*$")
+_VERSION_FILE = Path(__file__).resolve().parents[2] / "VERSION"
 
 
 def timezone_problem(timezone: str):
@@ -43,6 +46,21 @@ def timezone_problem(timezone: str):
     if known and timezone not in known:
         return f"Unknown timezone: {timezone}"
     return None
+
+
+def _installed_version():
+    try:
+        return _VERSION_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _firmware(engine):
+    try:
+        out, _ = engine.execute("bootloader", "firmware_mode")
+    except (CommandExecutionError, CommandTranslationError):
+        return None
+    return out.strip() or None
 
 
 @router.get("/status")
@@ -66,6 +84,9 @@ async def info(username: str = Depends(authenticate)):
         "timezone": timezone,
         "uptime_since": uptime,
         "initialized": config.is_initialized(),
+        "version": _installed_version(),
+        "init_system": engine.init_system,
+        "firmware": _firmware(engine),
     }
 
 
