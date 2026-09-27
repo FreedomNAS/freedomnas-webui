@@ -1235,7 +1235,20 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
     transition: transform var(--t-md), width var(--t-md);
   }
   .sidebar.mobile-open { transform: translateX(0); }
-  .main-area { margin-left: 0 !important; }
+  /* The drawer is always full width; the desktop icon-only mode doesn't apply. */
+  .sidebar, .sidebar.collapsed { width: min(var(--sidebar-w), 85vw); min-height: 0; }
+  .sidebar.collapsed .nav-item-label { display: inline; }
+  .sidebar.collapsed .nav-section { display: block; }
+  .sidebar-backdrop {
+    position: fixed; inset: 0; z-index: 99;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .sidebar-backdrop[hidden] { display: none; }
+  .main-area { margin-left: 0 !important; min-width: 0; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar-breadcrumb { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .topbar-username { display: none; }
+  .topbar-user { padding: 4px; }
   .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
   .page-content { padding: 16px; }
   .wizard-body, .wizard-footer { padding-left: 20px; padding-right: 20px; }

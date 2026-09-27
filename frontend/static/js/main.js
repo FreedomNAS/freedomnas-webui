@@ -172,11 +172,32 @@ const UILevel = {
 // ── Sidebar ──────────────────────────────────────────────────────────────────
 const Sidebar = {
   key: 'fnas_sidebar',
+  // Must match the max-width of the mobile @media block in main.css.
+  mobileQuery: window.matchMedia('(max-width: 640px)'),
+  isMobile() { return this.mobileQuery.matches; },
   isCollapsed() { return localStorage.getItem(this.key) === '1'; },
   toggle() {
+    // On phones the sidebar is an off-canvas drawer: open/close it without
+    // touching the desktop collapsed preference.
+    if (this.isMobile()) { this.setMobileOpen(!this.isMobileOpen()); return; }
     const collapsed = !this.isCollapsed();
     localStorage.setItem(this.key, collapsed ? '1' : '0');
     this.apply();
+  },
+  isMobileOpen() {
+    return document.querySelector('.sidebar')?.classList.contains('mobile-open') ?? false;
+  },
+  setMobileOpen(open) {
+    document.querySelector('.sidebar')?.classList.toggle('mobile-open', open);
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (backdrop) backdrop.hidden = !open;
+  },
+  init() {
+    this.apply();
+    document.getElementById('sidebar-backdrop')?.addEventListener('click', () => this.setMobileOpen(false));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') this.setMobileOpen(false); });
+    // Leaving the mobile width (rotation, "desktop site") must not leave the drawer open.
+    this.mobileQuery.addEventListener('change', () => this.setMobileOpen(false));
   },
   apply() {
     const sidebar = document.querySelector('.sidebar');
@@ -231,7 +252,7 @@ function initShared() {
 
   Theme.apply(Theme.current());
   UILevel.apply();
-  Sidebar.apply();
+  Sidebar.init();
   markActiveNav();
   loadUserBadge();
   loadEditionBadge();
