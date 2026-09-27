@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/pkg-info.mk
+
 %:
 	dh $@
 
@@ -8,6 +10,7 @@ override_dh_install:
 	mkdir -p debian/freedomnas-webui/usr/lib/freedomnas/webui
 	cp -r api frontend websocket \
 		debian/freedomnas-webui/usr/lib/freedomnas/webui/
+	echo $(DEB_VERSION_UPSTREAM) > debian/freedomnas-webui/usr/lib/freedomnas/webui/VERSION
 	# firstboot.sh and supervisor.sh are shared verbatim with the image
 	# builder and live in freedomnas-profiles/assets: symlink them rather
 	# than vendor a second copy that could drift.
