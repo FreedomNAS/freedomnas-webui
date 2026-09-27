@@ -2,8 +2,9 @@
 # the easiest to forget: jinja2 arrives through fastapi.templating, uvicorn is
 # how the supervisor launches the app, and websockets is what lets uvicorn
 # serve one. The distribution packages that provide these are named in
-# debian/control, PKGBUILD, the Gentoo ebuild and freedomnas-profiles'
-# packages/core.json; this file is the list they all answer to.
+# debian/control, freedomnas-arch's PKGBUILD, the Gentoo ebuild and
+# freedomnas-profiles' packages/core.json; this file is the list they all
+# answer to.
 fastapi
 uvicorn
 websockets      # uvicorn's WebSocket protocol: without it /ws/updates/terminal is a 404
