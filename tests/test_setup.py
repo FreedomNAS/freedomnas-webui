@@ -61,6 +61,8 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
         ("system", "timezone_set"),
         ("samba", "usershare_prepare"),
         ("users", "set_password_stdin"),
+        ("samba", "check_installed"),
+        ("samba", "set_user_password"),
     ]
     [password] = engine.called("users", "set_password_stdin")
     assert password.stdin == f"admin:{NEW_PASSWORD}\n"
@@ -89,6 +91,22 @@ def test_the_old_account_can_be_removed(admin, engine, fresh_config):
     assert r.status == 200
     [delete] = engine.called("users", "delete")
     assert delete.argv[-1] == "admin"
+    [smb] = engine.called("samba", "delete_user")
+    assert smb.argv[-1] == "admin"
+    assert [u["username"] for u in fresh_config.get_users()] == ["sarah"]
+
+
+def test_root_is_never_removed(server, engine, fresh_config, monkeypatch):
+    monkeypatch.setitem(ACCOUNTS, "root", ("root-password", ["root"]))
+    monkeypatch.setattr(setup_routes.shadow, "activate", lambda *a, **k: "rpool/.freedomnas")
+    engine.outputs[("zfs", "pool_list")] = "rpool\t10G\t1G\t9G\t10\tONLINE"
+    root = Client(server, ("root", "root-password"))
+    r = root.post("/api/setup/initialize",
+                  body(admin={"username": "sarah", "password": NEW_PASSWORD, "remove_default": True}))
+    assert r.status == 200 and r.body["admin"] == "sarah"
+    assert engine.called("users", "delete") == []
+    assert engine.called("samba", "delete_user") == []
+    assert [c.kwargs["username"] for c in engine.called("users", "set_password_stdin")] == ["sarah"]
     assert [u["username"] for u in fresh_config.get_users()] == ["sarah"]
 
 

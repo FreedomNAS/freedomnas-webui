@@ -27,7 +27,12 @@ from freedomnas import shadow
 from api.deps import _basic_credentials, authenticate, get_config, get_engine
 from api.routes import storage
 from api.routes.system import timezone_problem
-from api.routes.users import MIN_PASSWORD_LENGTH, _credentials_problem, _set_password
+from api.routes.users import (
+    MIN_PASSWORD_LENGTH,
+    _credentials_problem,
+    _delete_samba_user,
+    _set_password,
+)
 
 logger = logging.getLogger("freedomnas.webui.setup")
 
@@ -86,7 +91,8 @@ def _set_up_admin(engine, config, admin: dict, login: str) -> str:
     The administrator the system keeps. A blank name keeps the account the
     wizard was opened with; its password is replaced either way. With a new
     name, the old account is removed if asked, and otherwise given the new
-    password too, so the one the image shipped with works nowhere.
+    password too, so the one the image shipped with works nowhere. root is
+    never an image's shipped account, and is left as it is.
     """
     name = (admin.get("username") or "").strip() or login
     password = admin["password"]
@@ -96,8 +102,9 @@ def _set_up_admin(engine, config, admin: dict, login: str) -> str:
                        shell="/bin/bash", uid="", gid="")
     _set_password(engine, name, password)
     config.add_user({"username": name, "groups": [sudo_group], "admin": True})
-    if name != login:
+    if name != login and login != "root":
         if admin.get("remove_default"):
+            _delete_samba_user(engine, login)
             engine.execute("users", "delete", username=login)
         else:
             _set_password(engine, login, password)

@@ -8,7 +8,9 @@ DELETE /{username}          — delete OS user + remove from config
 
 Passwords always reach the OS through execute_with_stdin (spec 13.2): the
 profile's `users.set_password` variant puts them in the command string,
-where ps and the logs would pick them up.
+where ps and the logs would pick them up. Where Samba is installed, the
+same password goes into its own database too, so the account can open
+shares.
 """
 
 from fastapi import APIRouter, Depends
@@ -54,6 +56,31 @@ def _set_password(engine, target: str, password: str) -> None:
         payload.format(username=target, password=password),
         username=target,
     )
+    if _samba_installed(engine):
+        payload = engine.get_profile_value("samba", "password_stdin_format")
+        engine.execute_with_stdin(
+            "samba", "set_user_password",
+            payload.format(username=target, password=password),
+            username=target,
+        )
+
+
+def _samba_installed(engine) -> bool:
+    """
+    Samba keeps its own password database: an account without an entry
+    there cannot open a share, whatever its system password. Where Samba is
+    not installed there is nothing to keep in step.
+    """
+    try:
+        engine.execute("samba", "check_installed")
+    except (CommandExecutionError, CommandTranslationError):
+        return False
+    return True
+
+
+def _delete_samba_user(engine, target: str) -> None:
+    if _samba_installed(engine):
+        engine.execute("samba", "delete_user", username=target, check=False)
 
 
 @router.get("/")
@@ -136,6 +163,7 @@ async def delete_user(target: str, username: str = Depends(authenticate)):
     engine = get_engine()
     config = get_config()
     try:
+        _delete_samba_user(engine, target)
         engine.execute("users", "delete", username=target)
         config.remove_user(target)
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:

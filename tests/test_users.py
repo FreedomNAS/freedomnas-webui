@@ -65,10 +65,16 @@ def test_creating_a_user_creates_it_then_sets_its_password(client, engine, confi
     )
     assert r.status == 200
     assert r.body == {"username": "carla"}
-    assert engine.actions() == [("users", "create"), ("users", "set_password_stdin")]
+    assert engine.actions() == [
+        ("users", "create"),
+        ("users", "set_password_stdin"),
+        ("samba", "check_installed"),
+        ("samba", "set_user_password"),
+    ]
     [create] = engine.called("users", "create")
     assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "sudo,users", "carla"]
-    assert stdin_payloads(engine) == ["carla:a long password\n"]
+    assert stdin_payloads(engine) == ["carla:a long password\n",
+                                      "a long password\na long password\n"]
     [saved] = config.get_users()
     assert saved["username"] == "carla"
     assert "password" not in saved
@@ -109,3 +115,30 @@ def test_deleting_a_user_goes_through_the_engine_and_the_config(client, engine, 
     [delete] = engine.called("users", "delete")
     assert delete.argv == ["userdel", "-r", "carla"]
     assert config.get_users() == []
+
+
+def test_the_samba_password_travels_on_stdin_too(client, engine):
+    r = client.post("/api/users/bob/password", {"password": "a long: password"})
+    assert r.status == 200
+    [call] = engine.called("samba", "set_user_password")
+    assert call.argv == ["smbpasswd", "-a", "-s", "bob"]
+    assert call.stdin == "a long: password\na long: password\n"
+    assert "a long: password" not in call.command
+
+
+def test_without_samba_only_the_system_password_is_set(client, engine):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("samba", "check_installed")] = CommandExecutionError("testparm: not found")
+    r = client.post("/api/users/", {"username": "carla", "password": "a long password"})
+    assert r.status == 200
+    assert engine.called("samba", "set_user_password") == []
+    assert stdin_payloads(engine) == ["carla:a long password\n"]
+
+
+def test_a_deleted_user_leaves_the_samba_database_first(client, engine, config):
+    config.add_user({"username": "carla", "groups": []})
+    assert client.delete("/api/users/carla").status == 200
+    [smb] = engine.called("samba", "delete_user")
+    assert smb.argv == ["smbpasswd", "-x", "carla"]
+    actions = engine.actions()
+    assert actions.index(("samba", "delete_user")) < actions.index(("users", "delete"))
