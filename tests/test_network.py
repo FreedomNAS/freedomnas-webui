@@ -12,7 +12,7 @@ def test_interfaces_come_from_the_profile_command(client, engine):
     assert r.status == 200
     assert r.body == {"interfaces": links}
     [call] = engine.called("network", "list_interfaces")
-    assert call.argv == ["ip", "-j", "link", "show"]
+    assert call.argv == ["ip", "-j", "addr", "show"]
 
 
 @pytest.mark.parametrize("missing", ["ip", "cidr", "gateway", "dns"])
