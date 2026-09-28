@@ -195,9 +195,9 @@ def test_devices_are_parsed_from_lsblk_and_marked_in_use(client, engine):
     r = client.get("/api/storage/devices")
     assert r.body == {"devices": [
         {"name": "/dev/sda", "parent": "", "size": 4000787030016, "type": "disk", "fstype": "",
-         "mountpoint": "", "model": "WDC WD40", "in_use": False},
+         "mountpoint": "", "model": "WDC WD40", "in_use": False, "reserved": False},
         {"name": "/dev/sdb1", "parent": "", "size": 536870912, "type": "part", "fstype": "vfat",
-         "mountpoint": "/boot/efi", "model": "", "in_use": True},
+         "mountpoint": "/boot/efi", "model": "", "in_use": True, "reserved": False},
     ]}
 
 
@@ -363,3 +363,30 @@ def test_the_usb_key_is_written_and_the_keyslots_go_on_the_pool(client, engine, 
     assert mount.kwargs["device"] == "/dev/sdh1"
     [prop] = [c for c in engine.called("zfs", "dataset_set") if "org.freedomnas:keyslots" in c.command]
     assert prop.argv[-1] == "vault"
+
+
+def test_the_zfs_reserved_partition_is_not_offered(client, engine):
+    engine.outputs[("media", "list_devices")] = (
+        'NAME="/dev/sda" PKNAME="" SIZE="500107862016" TYPE="disk" FSTYPE="" MOUNTPOINT="" MODEL="SSD" PARTTYPE=""\n'
+        'NAME="/dev/sda1" PKNAME="/dev/sda" SIZE="500098400256" TYPE="part" FSTYPE="zfs_member" MOUNTPOINT="" MODEL="" '
+        'PARTTYPE="6a898cc3-1dd2-11b2-99a6-080020736631"\n'
+        'NAME="/dev/sda2" PKNAME="/dev/sda" SIZE="8388608" TYPE="part" FSTYPE="" MOUNTPOINT="" MODEL="" '
+        'PARTTYPE="6a945a3b-1dd2-11b2-99a6-080020736631"\n'
+    )
+    devices = {d["name"]: d for d in client.get("/api/storage/devices").body["devices"]}
+    assert devices["/dev/sda2"]["in_use"] and devices["/dev/sda2"]["reserved"]
+    assert not devices["/dev/sda1"]["reserved"]
+
+
+def test_cache_and_log_come_from_the_pool_itself(client, engine, config):
+    engine.outputs[("zfs", "pool_list")] = "tank\t100\t1\t99\t1\tONLINE"
+    engine.outputs[("zfs", "pool_leaf_devices")] = (
+        "tank\t100\t1\t99\t-\t-\t1%\t1%\t1.00x\tONLINE\t-\n"
+        "\t/dev/sda\t100\t1\t99\t-\t-\t1%\t1%\t-\tONLINE\n"
+        "cache             -      -      -\n"
+        "\t/dev/nvme0n1\t50\t0\t50\t-\t-\t0%\t0%\t-\tONLINE\n"
+    )
+    config.add_pool({"name": "tank", "log_devices": ["/dev/gone"]})
+    [pool] = client.get("/api/storage/pools").body["pools"]
+    assert pool["cache_devices"] == ["/dev/nvme0n1"]
+    assert "log_devices" not in pool

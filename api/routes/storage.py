@@ -64,8 +64,8 @@ async def list_pools(username: str = Depends(authenticate)):
         stdout, _ = engine.execute("zfs", "pool_list")
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    # What is attached as cache or log is not in `zpool list`: it is in
-    # config.yaml, written when the device was attached.
+    # What is attached as cache or log is read from the pool itself; what
+    # config.yaml recorded is only the fallback for when ZFS cannot say.
     recorded = {p.get("name"): p for p in get_config().get_pools()}
     try:
         rows = zfs_datasets.listing(engine)
@@ -95,6 +95,12 @@ async def list_pools(username: str = Depends(authenticate)):
             for key in ("cache_devices", "log_devices", "vdev_type", "encrypted"):
                 if known.get(key):
                     entry[key] = known[key]
+            live = pool_devices.attached(engine, parts[0])
+            if live is not None:
+                for role in ("cache", "log"):
+                    entry.pop(f"{role}_devices", None)
+                    if live[role]:
+                        entry[f"{role}_devices"] = live[role]
             pools.append(entry)
     return {"pools": pools}
 
@@ -569,6 +575,7 @@ async def list_devices(username: str = Depends(authenticate)):
         if not fields.get("NAME"):
             continue
         parents[fields["NAME"]] = fields.get("PKNAME", "")
+        reserved = fields.get("PARTTYPE", "").lower() == ZFS_RESERVED_PARTTYPE
         devices.append({
             "name": fields["NAME"],
             "parent": fields.get("PKNAME", ""),
@@ -577,7 +584,8 @@ async def list_devices(username: str = Depends(authenticate)):
             "fstype": fields.get("FSTYPE", ""),
             "mountpoint": fields.get("MOUNTPOINT", ""),
             "model": fields.get("MODEL", ""),
-            "in_use": bool(fields.get("FSTYPE") or fields.get("MOUNTPOINT")),
+            "in_use": bool(fields.get("FSTYPE") or fields.get("MOUNTPOINT") or reserved),
+            "reserved": reserved,
         })
 
     # A disk whose partitions hold the running system shows no filesystem of
@@ -593,6 +601,12 @@ async def list_devices(username: str = Depends(authenticate)):
         if device["name"] in busy:
             device["in_use"] = True
     return {"devices": devices}
+
+
+# The small partition ZFS makes beside its own when it is given a whole
+# disk ("Solaris reserved 1"): it holds no filesystem, so nothing else would
+# mark it as taken.
+ZFS_RESERVED_PARTTYPE = "6a945a3b-1dd2-11b2-99a6-080020736631"
 
 
 @router.post("/pools")
