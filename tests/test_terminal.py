@@ -78,17 +78,19 @@ def test_a_non_administrator_closes_4403(server, engine, config, launched):
     assert code == 4403
     assert "not an administrator" in messages[-1]["line"]
     assert launched == []
-    assert engine.called("zfs", "snapshot_create") == []
+    assert engine.called("zfs", "snapshot_create_recursive") == []
 
 
 def test_an_update_snapshots_every_pool_then_streams_topgrade(server, engine, config, launched):
+    engine.outputs[("zfs", "dataset_at_path")] = "rpool/ROOT/debian\n"
     config.add_pool({"name": "tank"})
     config.add_pool({"name": "backup"})
     messages, code = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
     assert code == 1000
 
-    snapshots = engine.called("zfs", "snapshot_create")
-    assert [c.kwargs["dataset"] for c in snapshots] == ["tank", "backup"]
+    snapshots = engine.called("zfs", "snapshot_create_recursive")
+    assert [c.kwargs["dataset"] for c in snapshots] == ["rpool", "tank", "backup"]
+    assert all(c.argv[:3] == ["zfs", "snapshot", "-r"] for c in snapshots)
     assert all(c.kwargs["snap_name"].startswith("pre-update-") for c in snapshots)
 
     assert launched == [["su", "-", "admin", "-c",
@@ -96,8 +98,10 @@ def test_an_update_snapshots_every_pool_then_streams_topgrade(server, engine, co
     lines = [(m["stream"], m["line"]) for m in messages if "line" in m]
     # Nobody went through /configure here, so the defaults are written first.
     assert lines[0][1].startswith("Wrote default configuration to ")
-    assert lines[1:3] == [("stdout", f"Snapshot created: tank@{snapshots[0].kwargs['snap_name']}"),
-                          ("stdout", f"Snapshot created: backup@{snapshots[1].kwargs['snap_name']}")]
+    snap = snapshots[0].kwargs["snap_name"]
+    assert lines[1:4] == [("stdout", f"Snapshot created: rpool@{snap} (recursive)"),
+                          ("stdout", f"Snapshot created: tank@{snap} (recursive)"),
+                          ("stdout", f"Snapshot created: backup@{snap} (recursive)")]
     assert ("stdout", "upgrading") in lines
     assert ("stdout", "done") in lines
     assert ("stderr", "a warning") in lines
@@ -126,14 +130,18 @@ def test_no_snapshot_when_auto_snapshot_is_off(server, engine, config, launched)
     config.add_pool({"name": "tank"})
     config.set("updates.topgrade.auto_snapshot", False)
     messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
-    assert engine.called("zfs", "snapshot_create") == []
+    assert engine.called("zfs", "snapshot_create_recursive") == []
     assert messages[-1] == {"exit_code": 3}
 
 
 def test_a_failed_snapshot_warns_but_the_update_runs(server, engine, config, launched):
     from freedomnas.engine import CommandExecutionError
     config.add_pool({"name": "tank"})
-    engine.outputs[("zfs", "snapshot_create")] = CommandExecutionError("out of space")
+    config.add_pool({"name": "backup"})
+    engine.outputs[("zfs", "snapshot_create_recursive")] = (
+        lambda dataset, **_: CommandExecutionError("out of space") if dataset == "tank" else "")
     messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
-    assert any("snapshot failed" in m.get("line", "") for m in messages)
+    lines = [m.get("line", "") for m in messages]
+    assert any("snapshot of tank failed" in line for line in lines)
+    assert any(line.startswith("Snapshot created: backup@") for line in lines)
     assert len(launched) == 1

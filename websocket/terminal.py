@@ -13,7 +13,8 @@ passwordless sudo.
 
 Behaviour (spec §7.7):
 - Command retrieved from engine profile via get_command("updates", "run_topgrade")
-- Pre-update snapshot taken if auto_snapshot is enabled
+- Pre-update snapshot, recursive, of the root pool and every recorded pool,
+  if auto_snapshot is enabled
 - asyncio.create_subprocess_exec used (never subprocess.run, never shell=True)
 - stdin is /dev/null: nobody can answer a prompt here, so a command that
   asks for one has to fail instead of hanging the page forever
@@ -55,6 +56,28 @@ async def _send(ws: WebSocket, stream: str, line: str) -> bool:
         return True
     except CLOSED:
         return False
+
+
+def _pools_to_snapshot(engine, config) -> list:
+    """
+    The pool the system runs from, then every recorded pool. The system
+    lives in <pool>/ROOT/<edition>, below the pool's top dataset, so the
+    snapshot is recursive: that is what zz-dracut-uki pairs with the
+    rotated-out UKI. A system set up from an image does not record its root
+    pool, so it is asked for rather than read from the configuration.
+    """
+    pools = []
+    try:
+        root, _ = engine.execute("zfs", "dataset_at_path", path="/", check=False)
+        if root.strip():
+            pools.append(root.strip().split("/", 1)[0])
+    except (CommandExecutionError, CommandTranslationError):
+        pass
+    for pool in config.get_pools():
+        name = pool.get("name", "")
+        if name and name not in pools:
+            pools.append(name)
+    return pools
 
 
 async def _close(ws: WebSocket, code: int = 1000) -> None:
@@ -136,15 +159,12 @@ async def updates_terminal(websocket: WebSocket):
     # Pre-update snapshot (spec §7.7)
     if config.get("updates.topgrade.auto_snapshot", True):
         snap_name = f"pre-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        try:
-            pools = config.get_pools()
-            for pool in pools:
-                dataset = pool.get("name", "")
-                if dataset:
-                    engine.execute("zfs", "snapshot_create", dataset=dataset, snap_name=snap_name)
-                    await _send(websocket, "stdout", f"Snapshot created: {dataset}@{snap_name}")
-        except (CommandExecutionError, CommandTranslationError) as exc:
-            await _send(websocket, "stderr", f"Warning: snapshot failed: {exc}")
+        for pool in _pools_to_snapshot(engine, config):
+            try:
+                engine.execute("zfs", "snapshot_create_recursive", dataset=pool, snap_name=snap_name)
+                await _send(websocket, "stdout", f"Snapshot created: {pool}@{snap_name} (recursive)")
+            except (CommandExecutionError, CommandTranslationError) as exc:
+                await _send(websocket, "stderr", f"Warning: snapshot of {pool} failed: {exc}")
 
     # Launch topgrade via asyncio (spec §7.7 — no shell=True, no subprocess.run)
     args = shlex.split(command)

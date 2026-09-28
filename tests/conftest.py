@@ -120,6 +120,8 @@ class RecordingEngine:
             raise out
         if callable(out):
             out = out(**kwargs)
+            if isinstance(out, Exception):
+                raise out
         return out, ""
 
     def execute(self, category, action, timeout=30, check=True, **kwargs):
