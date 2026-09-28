@@ -305,17 +305,48 @@ function attachedDevices(pool, role, label) {
 }
 
 async function attachDevice(pool) {
-  const role = prompt(`Attach to ${pool} — type "cache" for read cache (L2ARC) or "log" for the intent log (SLOG):`, 'cache');
-  if (!role) return;
-  if (role !== 'cache' && role !== 'log') { toast('Type cache or log.', 'err'); return; }
-  const device = prompt(`Device for the ${role} (a whole disk or partition, e.g. /dev/disk/by-id/ata-SSD…):`);
-  if (!device) return;
-  try {
-    const res = await apiJSON('POST', `/api/storage/pools/${pool}/devices`,
-                              { role, devices: [device.trim()] });
-    toast(`Attached ${res.attached.join(', ')} as ${role}`, 'ok');
-    loadPools();
-  } catch (e) { toast(e.message, 'err'); }
+  let devices;
+  try { devices = (await apiJSON('GET', '/api/storage/devices')).devices; }
+  catch (e) { toast(e.message, 'err'); return; }
+  const disks = devices.filter(d => d.type === 'disk' || d.type === 'part');
+  const list = disks.length ? disks.map(d => `
+    <label class="device-row${d.in_use ? ' device-busy' : ''}">
+      <input type="radio" name="attach-device" value="${esc(d.name)}"${d.in_use ? ' disabled' : ''}>
+      <span class="mono">${esc(d.name)}</span>
+      <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
+      ${d.in_use ? `<span class="badge badge-warn">${d.reserved ? 'ZFS reserved' : esc(d.fstype || d.mountpoint || 'in use')}</span>` : ''}
+    </label>`).join('') : emptyState('No block devices found.');
+  datasetDialog(`Add cache or log device — ${pool}`, 'Add device', `
+    <div class="form-group">
+      <label class="form-label">Role</label>
+      <div class="device-list">
+        <label class="device-row"><input type="radio" name="attach-role" value="cache" checked>
+          <span><strong>Cache (L2ARC)</strong> — an SSD used as a read cache. It holds no data: losing it costs speed, not files.</span></label>
+        <label class="device-row"><input type="radio" name="attach-role" value="log">
+          <span><strong>Log (SLOG)</strong> — only helps synchronous writes (NFS, databases).</span></label>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Device</label>
+      <div class="device-list">${list}</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label"><input type="checkbox" id="attach-confirm">
+        I understand the selected device will be erased</label>
+    </div>`, async () => {
+      const role = document.querySelector('input[name="attach-role"]:checked')?.value;
+      const device = document.querySelector('input[name="attach-device"]:checked')?.value;
+      if (!device) { toast('Select a device.', 'err'); return; }
+      if (!document.getElementById('attach-confirm').checked) {
+        toast('Tick that the device will be erased.', 'err'); return;
+      }
+      const label = role === 'cache' ? 'read cache (L2ARC)' : 'intent log (SLOG)';
+      if (!await confirm('Add Device', `Add <span class="mono">${esc(device)}</span> to <strong>${esc(pool)}</strong> as ${label}? Everything on it is destroyed.`, 'Add and erase')) return;
+      const res = await apiJSON('POST', `/api/storage/pools/${pool}/devices`, { role, devices: [device] });
+      toast(`Attached ${res.attached.join(', ')} as ${role}.`, 'ok');
+      closeModal('modal-dataset');
+      loadPools();
+    });
 }
 
 async function detachDevice(pool, device) {
@@ -374,7 +405,7 @@ async function openPoolForm() {
       <input type="checkbox" value="${esc(d.name)}"${d.in_use ? ' disabled' : ''}>
       <span class="mono">${esc(d.name)}</span>
       <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
-      ${d.in_use ? `<span class="badge badge-warn">${esc(d.fstype || d.mountpoint)}</span>` : ''}
+      ${d.in_use ? `<span class="badge badge-warn">${d.reserved ? 'ZFS reserved' : esc(d.fstype || d.mountpoint || 'in use')}</span>` : ''}
     </label>`).join('');
 
   const free = disks.filter(d => !d.in_use);
