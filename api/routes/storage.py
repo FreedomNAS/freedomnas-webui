@@ -7,6 +7,9 @@ GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
 GET  /devices             — block devices, and what is already on them
 POST /pools               — create a pool
+GET  /pools/importable    — pools attached to this system but not imported
+POST /pools/import/inspect — look at one without changing it
+POST /pools/import        — import it, with the shares and users it brings
 POST /pools/{pool}/devices — attach a cache (L2ARC) or log (SLOG) device
 DELETE /pools/{pool}/devices?device=… — detach one again
 GET  /properties          — the ZFS properties this edition supports
@@ -17,6 +20,7 @@ PUT  /snapshot-policies/{dataset} — set how many to keep, per interval
 DELETE /snapshot-policies/{dataset} — stop scheduling (keeps existing snapshots)
 """
 
+import asyncio
 import logging
 import posixpath
 import re
@@ -27,9 +31,12 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas import pools as pool_devices
+from freedomnas import pool_import
 from freedomnas import shadow
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
+from api.routes.shares import add_nfs_share, add_smb_share, nfs_share_problem
+from api.routes.users import create_account, password_problem
 
 logger = logging.getLogger("freedomnas.webui.storage")
 
@@ -489,3 +496,235 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
         "log_devices": attached["log"],
     })
     return {"pool": name, "attached": attached, "warnings": attached["errors"]}
+
+
+@router.get("/pools/importable")
+async def importable_pools(username: str = Depends(authenticate)):
+    engine = get_engine()
+    try:
+        pools = await asyncio.to_thread(pool_import.list_importable, engine)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"pools": pools}
+
+
+def _import_request(body: dict):
+    pool_id = str(body.get("pool_id") or "").strip()
+    name = (body.get("name") or "").strip() or None
+    mountpoint = (body.get("mountpoint") or "").strip() or None
+    passphrases = body.get("passphrases") or {}
+    if not pool_id.isdigit():
+        return None, "Choose a pool to import"
+    if name and not _POOL_NAME.match(name):
+        return None, "A pool name starts with a letter and holds letters, digits, _ . : -"
+    if not isinstance(passphrases, dict):
+        return None, "passphrases must map encryption roots to passphrases"
+    return {
+        "pool_id": pool_id,
+        "name": name,
+        "force": bool(body.get("force")),
+        "root_mountpoint": mountpoint,
+        "passphrases": {str(k): str(v) for k, v in passphrases.items()},
+    }, None
+
+
+def _pool_names(engine):
+    stdout, _ = engine.execute("zfs", "pool_list", check=False)
+    return {line.split("\t")[0] for line in stdout.splitlines() if line.strip()}
+
+
+def _user_exists(engine, who) -> bool:
+    try:
+        stdout, _ = engine.execute("users", "get_user_info", username=str(who), check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        return False
+    return bool(stdout.strip())
+
+
+def _group_exists(engine, group: str) -> bool:
+    try:
+        stdout, _ = engine.execute("users", "group_exists", group=group, check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        return False
+    return bool(stdout.strip())
+
+
+def _annotate(engine, config, report: dict) -> dict:
+    """What the report means on this system: taken names, existing users and groups."""
+    final = report["pool"]["final_name"]
+    report["name_taken"] = final in _pool_names(engine)
+    smb_here = {s.get("name") for s in config.get_smb_shares()}
+    nfs_here = {s.get("name") for s in config.get_nfs_shares()}
+    for share in report["shares"]["smb"]:
+        share["exists_here"] = share["name"] in smb_here
+    for share in report["shares"]["nfs"]:
+        share["exists_here"] = share["name"] in nfs_here
+    known = {u["username"] for u in report["users"]}
+    for share in report["shares"]["smb"]:
+        for user in share.get("users", []):
+            if user not in known:
+                report["users"].append({"username": user, "uid": None, "groups": [],
+                                        "shell": "/bin/bash", "admin": False})
+                known.add(user)
+    for user in report["users"]:
+        user["exists_here"] = _user_exists(engine, user["username"])
+        user["uid_taken"] = bool(user["uid"]) and not user["exists_here"] and _user_exists(engine, user["uid"])
+        user["groups_here"] = [g for g in user["groups"]
+                               if g not in pool_import.ADMIN_GROUPS and _group_exists(engine, g)]
+    return report
+
+
+@router.post("/pools/import/inspect")
+async def inspect_pool(body: dict, username: str = Depends(authenticate)):
+    request, problem = _import_request(body)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    engine, config = get_engine(), get_config()
+    try:
+        report = await asyncio.to_thread(pool_import.inspect, engine, **request)
+        report = await asyncio.to_thread(_annotate, engine, config, report)
+    except pool_import.ImportProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return report
+
+
+def _blocking_problem(report: dict):
+    if report["refused"]:
+        return ("It cannot be imported: it holds another system's root ("
+                + "; ".join(report["refused"]) + ")")
+    if report["name_taken"]:
+        return f"A pool named {report['pool']['final_name']} already exists here: choose another name"
+    if report["conflicts"]:
+        c = report["conflicts"][0]
+        return (f"{c['dataset'] or report['pool']['final_name']} would mount on {c['mountpoint']}: "
+                f"{c['reason']}. Choose another mountpoint for the pool")
+    for root in report["encryption_roots"]:
+        if root.get("error") in ("wrong passphrase", "passphrase required",
+                                 "the passphrase may not contain line breaks"):
+            return f"{root['dataset'] or report['pool']['final_name']}: {root['error']}"
+    return None
+
+
+def _do_import(engine, config, request: dict, body: dict, admin_user: str) -> dict:
+    report = _annotate(engine, config, pool_import.inspect(engine, **request))
+    problem = _blocking_problem(report)
+    if problem:
+        raise pool_import.ImportProblem(problem)
+
+    wanted_smb = set(body.get("smb") or [])
+    wanted_nfs = set(body.get("nfs") or [])
+    smb = [s for s in report["shares"]["smb"] if s["name"] in wanted_smb]
+    nfs = [s for s in report["shares"]["nfs"] if s["name"] in wanted_nfs]
+    given = {u.get("username"): u for u in body.get("users") or [] if isinstance(u, dict)}
+    foreign = {u["username"]: u for u in report["users"]}
+
+    needed = []
+    for share in smb:
+        for user in share.get("users", []):
+            if user not in needed and not foreign.get(user, {}).get("exists_here"):
+                needed.append(user)
+    for user in needed:
+        if user not in given:
+            raise pool_import.ImportProblem(
+                f"The share needs the user {user}: give it a password to create it")
+    to_create = [name for name in given if name in foreign and not foreign[name]["exists_here"]]
+    for name in to_create:
+        problem = password_problem(name, given[name].get("password") or "")
+        if problem:
+            raise pool_import.ImportProblem(f"{name}: {problem}")
+
+    name = report["pool"]["final_name"]
+    result = pool_import.import_pool(
+        engine, request["pool_id"], name, force=request["force"],
+        root_mountpoint=request["root_mountpoint"], passphrases=request["passphrases"])
+
+    warnings = []
+    try:
+        shadow.ensure_dataset(engine, name)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        warnings.append(f"No {shadow.DATASET_NAME} dataset on {name}: {exc}")
+    locked = [r["dataset"] or name for r in result["encryption_roots"] if not r["unlocked"]]
+    for dataset in locked:
+        warnings.append(f"{dataset} stays locked")
+    config.add_pool({
+        "name": name,
+        "encrypted": bool(result["encryption_roots"]),
+        "imported": True,
+    })
+
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    created_users = []
+    for user_name in to_create:
+        info = foreign[user_name]
+        groups = list(info["groups_here"])
+        if given[user_name].get("admin"):
+            groups.append(sudo_group)
+        uid = info["uid"] if info["uid"] and not info["uid_taken"] else None
+        if info["uid"] and info["uid_taken"]:
+            warnings.append(f"{user_name}: uid {info['uid']} is taken here, so its files on the pool "
+                            "keep an owner number this system gives to someone else")
+        try:
+            create_account(engine, config, user_name, given[user_name]["password"],
+                           groups=groups, shell=info["shell"], uid=uid)
+            created_users.append(user_name)
+        except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+            warnings.append(f"User {user_name} not created: {exc}")
+
+    created_shares = []
+    for share in smb:
+        if share["exists_here"]:
+            warnings.append(f"SMB share {share['name']} already exists here: left as it is")
+            continue
+        if any(u not in created_users and not foreign.get(u, {}).get("exists_here") for u in share.get("users", [])):
+            warnings.append(f"SMB share {share['name']} not created: a user it needs is missing")
+            continue
+        try:
+            add_smb_share(engine, config, {
+                "name": share["name"],
+                "path": share["path"],
+                "comment": share.get("comment") or share["name"],
+                "acl": share.get("acl") or f"Everyone:R,{admin_user}:F",
+                "read_only": bool(share.get("read_only")),
+                "valid_users": list(share.get("valid_users") or []),
+            })
+            created_shares.append(f"smb:{share['name']}")
+        except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+            warnings.append(f"SMB share {share['name']} not created: {exc}")
+    for share in nfs:
+        if share["exists_here"]:
+            warnings.append(f"NFS share {share['name']} already exists here: left as it is")
+            continue
+        entry = {
+            "name": share["name"],
+            "path": share["path"],
+            "allowed_hosts": share.get("allowed_hosts", ""),
+            "options": share.get("options") or "rw,sync,no_subtree_check",
+        }
+        problem = nfs_share_problem(entry)
+        if problem:
+            warnings.append(f"NFS share {share['name']} not created: {problem}")
+            continue
+        try:
+            add_nfs_share(engine, config, entry)
+            created_shares.append(f"nfs:{share['name']}")
+        except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+            warnings.append(f"NFS share {share['name']} not created: {exc}")
+
+    return {"pool": name, "users": created_users, "shares": created_shares,
+            "kept_config": result.get("kept_config"), "warnings": warnings}
+
+
+@router.post("/pools/import")
+async def import_existing_pool(body: dict, username: str = Depends(authenticate)):
+    request, problem = _import_request(body)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    engine, config = get_engine(), get_config()
+    try:
+        return await asyncio.to_thread(_do_import, engine, config, request, body, username)
+    except pool_import.ImportProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})

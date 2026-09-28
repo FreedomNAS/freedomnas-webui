@@ -10,6 +10,7 @@
   </div>
   <div class="page-header-actions">
     <button id="btn-create-pool" class="btn btn-primary">Create Pool</button>
+    <button id="btn-import-pool" class="btn btn-secondary">Import Pool</button>
     <button id="btn-create-snap" class="btn btn-secondary advanced-only" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Create Snapshot
@@ -95,6 +96,39 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-close>Cancel</button>
         <button type="submit" id="btn-pool-submit" class="btn btn-primary">Create Pool</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Import an existing pool -->
+<div id="modal-import" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <span class="modal-title">Import Pool</span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-import">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Pools found on the attached disks</label>
+          <div id="import-pools" class="device-list"></div>
+          <span class="form-hint">Checking a pool imports it read-only for a moment and changes nothing on it.</span>
+        </div>
+        <div class="form-group" id="import-force-group" hidden>
+          <label class="form-label">
+            <input id="f-import-force" type="checkbox">
+            This pool was last used by another system: I confirm it is not in use there any more
+          </label>
+        </div>
+        <div id="import-report"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="button" id="btn-import-check" class="btn btn-secondary">Check</button>
+        <button type="submit" id="btn-import-submit" class="btn btn-primary" disabled>Import</button>
       </div>
     </form>
   </div>

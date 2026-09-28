@@ -19,6 +19,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('form-pool').addEventListener('submit', submitPool);
 
+  bindModalClose('modal-import');
+  document.getElementById('btn-import-pool')?.addEventListener('click', openImportForm);
+  document.getElementById('btn-import-check').addEventListener('click', checkImport);
+  document.getElementById('form-import').addEventListener('submit', submitImport);
+
   bindModalClose('modal-properties');
   document.getElementById('form-properties').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -393,6 +398,229 @@ async function submitPool(e) {
   } catch (err) {
     toast(err.message, 'err');
   } finally {
+    btn.disabled = false;
+  }
+}
+
+
+// ── Importing a pool ─────────────────────────────────────────────────────────
+// Two steps: Check imports the chosen pool read-only and exports it again, so
+// the report below is what the pool holds; Import then brings it in with the
+// name, mountpoint, passphrases, shares and users chosen from that report.
+
+let _importReport = null;
+let _importPassphrases = {};
+
+async function openImportForm() {
+  const list = document.getElementById('import-pools');
+  _importReport = null;
+  _importPassphrases = {};
+  document.getElementById('form-import').reset();
+  document.getElementById('import-report').innerHTML = '';
+  document.getElementById('import-force-group').hidden = true;
+  document.getElementById('btn-import-submit').disabled = true;
+  list.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  openModal('modal-import');
+
+  let pools;
+  try {
+    pools = (await apiJSON('GET', '/api/storage/pools/importable')).pools;
+  } catch (e) {
+    list.innerHTML = errorState(e.message);
+    return;
+  }
+  if (!pools.length) { list.innerHTML = emptyState('No pool to import on the attached disks.'); return; }
+
+  list.innerHTML = pools.map(p => `
+    <label class="device-row${p.importable ? '' : ' device-busy'}">
+      <input type="radio" name="import-pool" value="${esc(p.id)}" data-foreign="${p.foreign ? 1 : 0}"${p.importable ? '' : ' disabled'}>
+      <span class="mono">${esc(p.name)}</span>
+      <span class="text-muted">${esc(p.state)} — id ${esc(p.id)}</span>
+      ${p.foreign ? '<span class="badge badge-warn">other system</span>' : ''}
+      ${p.importable ? '' : `<span class="badge badge-err">${esc(p.status || 'cannot be imported')}</span>`}
+    </label>`).join('');
+  list.querySelectorAll('input[name="import-pool"]').forEach(r => r.addEventListener('change', () => {
+    _importReport = null;
+    _importPassphrases = {};
+    document.getElementById('import-report').innerHTML = '';
+    document.getElementById('btn-import-submit').disabled = true;
+    document.getElementById('f-import-force').checked = false;
+    document.getElementById('import-force-group').hidden = r.dataset.foreign !== '1';
+  }));
+}
+
+function importRequest() {
+  const chosen = document.querySelector('input[name="import-pool"]:checked');
+  const body = {
+    pool_id: chosen ? chosen.value : '',
+    force: document.getElementById('f-import-force').checked,
+  };
+  const name = document.getElementById('f-import-name');
+  const mountpoint = document.getElementById('f-import-mountpoint');
+  if (name && name.value.trim()) body.name = name.value.trim();
+  if (mountpoint && mountpoint.value.trim() && mountpoint.value.trim() !== mountpoint.dataset.was) {
+    body.mountpoint = mountpoint.value.trim();
+  }
+  document.querySelectorAll('[data-passphrase]').forEach(i => {
+    if (i.value) _importPassphrases[i.dataset.passphrase] = i.value;
+  });
+  body.passphrases = {..._importPassphrases};
+  return body;
+}
+
+async function checkImport() {
+  const body = importRequest();
+  if (!body.pool_id) { toast('Choose a pool first.', 'err'); return; }
+  const out = document.getElementById('import-report');
+  const btn = document.getElementById('btn-import-check');
+  btn.disabled = true;
+  out.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  try {
+    _importReport = await apiJSON('POST', '/api/storage/pools/import/inspect', body);
+    renderImportReport(_importReport, body);
+  } catch (e) {
+    _importReport = null;
+    out.innerHTML = errorState(e.message);
+    document.getElementById('btn-import-submit').disabled = true;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function importBlocked(r) {
+  if (r.refused.length) return true;
+  if (r.name_taken || r.conflicts.length) return true;
+  return r.encryption_roots.some(k => k.keyformat === 'passphrase' && !k.unlocked);
+}
+
+function renderImportReport(r, asked) {
+  const out = document.getElementById('import-report');
+  const parts = [];
+  if (r.refused.length) {
+    parts.push(`<div class="alert alert-err"><span>This pool cannot be imported: it holds another
+      system's root, and its datasets would mount over this system's own directories
+      (${r.refused.map(esc).join('; ')}).</span></div>`);
+    out.innerHTML = parts.join('');
+    document.getElementById('btn-import-submit').disabled = true;
+    return;
+  }
+
+  parts.push(`<div class="form-group">
+      <label class="form-label" for="f-import-name">Name on this system</label>
+      <input id="f-import-name" class="input" type="text" value="${esc(r.pool.final_name)}" autocomplete="off">
+      ${r.name_taken ? '<span class="form-hint text-err">A pool with this name already exists here: choose another, then Check again.</span>' : ''}
+    </div>`);
+  parts.push(`<div class="form-group">
+      <label class="form-label" for="f-import-mountpoint">Mountpoint</label>
+      <input id="f-import-mountpoint" class="input mono" type="text" value="${esc(r.root_mountpoint)}"
+             data-was="${esc(asked.mountpoint ? '' : r.root_mountpoint)}" autocomplete="off">
+      <span class="form-hint">${r.freedomnas
+        ? 'Where the pool mounted on the system it comes from; datasets that inherit it follow.'
+        : 'This pool was not made by FreedomNAS: check where it mounts. Changing it sets <span class="mono">zfs set mountpoint=</span> on the pool.'}</span>
+    </div>`);
+
+  for (const k of r.encryption_roots) {
+    const label = esc(k.dataset || r.pool.final_name);
+    if (k.keyformat !== 'passphrase') {
+      parts.push(`<div class="alert alert-warn"><span>${label} is encrypted with a
+        ${esc(k.keyformat || 'non-passphrase')} key: it cannot be unlocked here and stays locked.</span></div>`);
+    } else if (!k.unlocked) {
+      parts.push(`<div class="form-group">
+          <label class="form-label" for="f-key-${label}">Passphrase for ${label}</label>
+          <input id="f-key-${label}" class="input" type="password" data-passphrase="${esc(k.dataset)}" autocomplete="off">
+          ${k.error ? `<span class="form-hint text-err">${esc(k.error)}</span>` : ''}
+        </div>`);
+    } else {
+      parts.push(`<div class="alert alert-ok"><span>${label}: passphrase accepted.</span></div>`);
+    }
+  }
+
+  for (const c of r.conflicts) {
+    parts.push(`<div class="alert alert-warn"><span>${esc(c.dataset || r.pool.final_name)} would mount on
+      <span class="mono">${esc(c.mountpoint)}</span>: ${esc(c.reason)}. Choose another mountpoint, then Check again.</span></div>`);
+  }
+
+  parts.push(`<div class="table-wrap"><table>
+      <thead><tr><th>Dataset</th><th>Mountpoint</th><th>Used</th></tr></thead>
+      <tbody>${r.datasets.map(d => `<tr>
+        <td class="mono">${esc(d.dataset || r.pool.final_name)}${d.locked ? ' <span class="badge badge-warn">locked</span>' : ''}</td>
+        <td class="mono">${d.canmount === 'on' ? esc(d.mountpoint) : '<span class="text-muted">not mounted</span>'}</td>
+        <td>${humanSize(d.used)}</td></tr>`).join('')}</tbody>
+    </table></div>`);
+
+  if (r.config_error) {
+    parts.push(`<div class="alert alert-warn"><span>Its FreedomNAS configuration could not be read: ${esc(r.config_error)}</span></div>`);
+  }
+  const shares = [...r.shares.smb.map(s => ({...s, kind: 'smb'})), ...r.shares.nfs.map(s => ({...s, kind: 'nfs'}))];
+  if (shares.length) {
+    parts.push(`<div class="form-group"><label class="form-label">Shares from its FreedomNAS configuration</label>
+      <div class="device-list">${shares.map(s => `
+        <label class="device-row${s.exists_here ? ' device-busy' : ''}">
+          <input type="checkbox" data-share="${s.kind}" value="${esc(s.name)}"${s.exists_here ? ' disabled' : ' checked'}>
+          <span class="badge badge-info">${s.kind.toUpperCase()}</span>
+          <span class="mono">${esc(s.name)}</span>
+          <span class="text-muted mono">${esc(s.path)}</span>
+          ${s.exists_here ? '<span class="badge badge-warn">name already used here</span>' : ''}
+        </label>`).join('')}</div></div>`);
+  }
+  parts.push('<div id="import-users"></div>');
+
+  out.innerHTML = parts.join('');
+  out.querySelectorAll('[data-share]').forEach(c => c.addEventListener('change', () => renderImportUsers(r)));
+  renderImportUsers(r);
+  document.getElementById('btn-import-submit').disabled = importBlocked(r);
+}
+
+function importUsersNeeded(r) {
+  const chosen = new Set([...document.querySelectorAll('[data-share="smb"]:checked')].map(c => c.value));
+  const needed = new Set();
+  r.shares.smb.filter(s => chosen.has(s.name)).forEach(s => (s.users || []).forEach(u => needed.add(u)));
+  return r.users.filter(u => needed.has(u.username) && !u.exists_here);
+}
+
+function renderImportUsers(r) {
+  const box = document.getElementById('import-users');
+  const kept = {};
+  box.querySelectorAll('[data-user-password]').forEach(i => { kept[i.dataset.userPassword] = i.value; });
+  const users = importUsersNeeded(r);
+  if (!users.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="form-group"><label class="form-label">Users these shares need</label>
+    <span class="form-hint">They do not exist here. Passwords are never stored in the configuration, so each needs a new one.</span>
+    </div>
+    ${users.map(u => `<div class="form-group">
+      <label class="form-label"><span class="mono">${esc(u.username)}</span>
+        <span class="text-muted">${u.uid ? (u.uid_taken ? `— uid ${esc(u.uid)} is taken here: a new one will be used` : `— uid ${esc(u.uid)}, as on the other system`) : ''}</span></label>
+      <input class="input" type="password" placeholder="New password, at least 8 characters" autocomplete="new-password"
+             data-user-password="${esc(u.username)}" value="${esc(kept[u.username] || '')}">
+      ${u.admin ? `<label class="form-label"><input type="checkbox" data-user-admin="${esc(u.username)}"> Administrator, as on the other system</label>` : ''}
+    </div>`).join('')}`;
+}
+
+async function submitImport(e) {
+  e.preventDefault();
+  if (!_importReport) { toast('Check the pool first.', 'err'); return; }
+  const body = importRequest();
+  body.smb = [...document.querySelectorAll('[data-share="smb"]:checked')].map(c => c.value);
+  body.nfs = [...document.querySelectorAll('[data-share="nfs"]:checked')].map(c => c.value);
+  body.users = [...document.querySelectorAll('[data-user-password]')].map(i => ({
+    username: i.dataset.userPassword,
+    password: i.value,
+    admin: !!document.querySelector(`[data-user-admin="${CSS.escape(i.dataset.userPassword)}"]`)?.checked,
+  }));
+  if (!await confirm('Import Pool', `Import <strong>${esc(body.name || _importReport.pool.final_name)}</strong>?`, 'Import')) return;
+
+  const btn = document.getElementById('btn-import-submit');
+  btn.disabled = true;
+  try {
+    const res = await apiJSON('POST', '/api/storage/pools/import', body);
+    const extra = [res.users.length ? `${res.users.length} user(s)` : '', res.shares.length ? `${res.shares.length} share(s)` : '']
+      .filter(Boolean).join(' and ');
+    toast(`Pool ${res.pool} imported${extra ? ' with ' + extra : ''}.`, res.warnings.length ? 'warn' : 'ok');
+    res.warnings.forEach(w => toast(w, 'warn', 8000));
+    closeModal('modal-import');
+    loadPools();
+  } catch (err) {
+    toast(err.message, 'err');
     btn.disabled = false;
   }
 }

@@ -69,26 +69,29 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
     acl = body.get("acl") or ("Everyone:R" if read_only else f"Everyone:R,{username}:F")
 
     try:
-        engine.execute(
-            "samba", "create_share",
-            share_name=share_name,
-            path=path,
-            comment=comment,
-            acl=acl,
-        )
-        engine.execute("samba", "reload_config")
-        config.add_smb_share({
+        add_smb_share(engine, config, {
             "name": share_name,
             "path": path,
             "comment": comment,
             "acl": acl,
             "read_only": read_only,
             "valid_users": valid_users,
-            "guest_ok": False,
         })
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"name": share_name, "path": path}
+
+
+def add_smb_share(engine, config, share: dict) -> None:
+    engine.execute(
+        "samba", "create_share",
+        share_name=share["name"],
+        path=share["path"],
+        comment=share["comment"],
+        acl=share["acl"],
+    )
+    engine.execute("samba", "reload_config")
+    config.add_smb_share({**share, "guest_ok": False})
 
 
 @router.delete("/smb/{share_name}")
@@ -148,9 +151,7 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
     config = get_config()
 
     try:
-        engine.execute("nfs", "export_add", path=path, clients=allowed_hosts, options=options)
-        engine.execute("nfs", "exportfs_reload")
-        config.add_nfs_share({
+        add_nfs_share(engine, config, {
             "name": name,
             "path": path,
             "allowed_hosts": allowed_hosts,
@@ -159,6 +160,21 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"name": name, "path": path}
+
+
+def nfs_share_problem(share: dict):
+    for field in ("path", "allowed_hosts", "options"):
+        problem = _export_field_problem(field, str(share.get(field, "")))
+        if problem:
+            return problem
+    return None
+
+
+def add_nfs_share(engine, config, share: dict) -> None:
+    engine.execute("nfs", "export_add", path=share["path"],
+                   clients=share["allowed_hosts"], options=share["options"])
+    engine.execute("nfs", "exportfs_reload")
+    config.add_nfs_share(share)
 
 
 @router.delete("/nfs/{share_name}")

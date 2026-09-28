@@ -96,35 +96,46 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
         return JSONResponse(status_code=422, content={"detail": "username is required"})
 
     password = body.get("password", "")
-    if not password:
-        return JSONResponse(status_code=422, content={"detail": "password is required"})
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return JSONResponse(
-            status_code=422,
-            content={"detail": f"password must be at least {MIN_PASSWORD_LENGTH} characters"},
-        )
-    problem = _credentials_problem(new_user, password)
+    problem = password_problem(new_user, password)
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
 
-    groups = body.get("groups", [])
-    shell = body.get("shell", "/bin/bash")
-    uid = body.get("uid")
-    gid = body.get("gid")
-
-    engine = get_engine()
-    config = get_config()
     try:
-        engine.execute(
-            "users", "create",
-            username=new_user,
-            groups=",".join(groups),
-            shell=shell,
-            uid=uid or "",
-            gid=gid or "",
+        create_account(
+            get_engine(), get_config(), new_user, password,
+            groups=body.get("groups", []),
+            shell=body.get("shell", "/bin/bash"),
+            uid=body.get("uid"),
+            gid=body.get("gid"),
         )
-    except (CommandExecutionError, CommandTranslationError) as exc:
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"username": new_user}
+
+
+def password_problem(username: str, password: str) -> str:
+    if not password:
+        return "password is required"
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"password must be at least {MIN_PASSWORD_LENGTH} characters"
+    return _credentials_problem(username, password)
+
+
+def create_account(engine, config, new_user: str, password: str, groups=(),
+                   shell: str = "/bin/bash", uid=None, gid=None) -> None:
+    """
+    Create an OS account with its system and Samba password, and record it.
+    Raises on failure; an account that failed after useradd is taken back.
+    """
+    groups = list(groups)
+    engine.execute(
+        "users", "create_with_uid" if uid else "create",
+        username=new_user,
+        groups=",".join(groups),
+        shell=shell,
+        uid=uid or "",
+        gid=gid or "",
+    )
     try:
         _set_password(engine, new_user, password)
         config.add_user({
@@ -134,10 +145,9 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
             **({"uid": uid} if uid else {}),
             **({"gid": gid} if gid else {}),
         })
-    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException):
         _undo_create(engine, new_user)
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
-    return {"username": new_user}
+        raise
 
 
 def _undo_create(engine, target: str) -> None:
