@@ -55,6 +55,14 @@ def test_an_smb_share_is_created_reloaded_and_recorded(client, engine, config, s
     assert saved["comment"] == "foto"
 
 
+def test_a_read_only_share_gives_nobody_write_access(client, engine, config, smb_ready):
+    r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto", "read_only": True})
+    assert r.status == 200
+    [create] = engine.called("samba", "create_share")
+    assert create.argv[-1] == "Everyone:R"
+    assert config.get_smb_share("foto")["acl"] == "Everyone:R"
+
+
 def test_a_comment_with_spaces_stays_the_comment(client, engine, smb_ready):
     client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto",
                                     "comment": "Foto & Video", "acl": "Everyone:F"})

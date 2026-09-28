@@ -64,9 +64,9 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
         )
 
     comment = body.get("comment", share_name)
-    acl = body.get("acl", f"Everyone:R,{username}:F")
     valid_users = body.get("valid_users", [username])
-    read_only = body.get("read_only", False)
+    read_only = bool(body.get("read_only", False))
+    acl = body.get("acl") or ("Everyone:R" if read_only else f"Everyone:R,{username}:F")
 
     try:
         engine.execute(
