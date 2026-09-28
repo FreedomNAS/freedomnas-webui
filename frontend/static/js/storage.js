@@ -108,6 +108,10 @@ async function loadPools() {
       b.addEventListener('click', () => attachDevice(b.dataset.attach)));
     el.querySelectorAll('[data-detach]').forEach(b =>
       b.addEventListener('click', () => detachDevice(b.dataset.pool, b.dataset.detach)));
+    el.querySelectorAll('[data-export]').forEach(b =>
+      b.addEventListener('click', () => openRemovePool(b.dataset.export, 'export')));
+    el.querySelectorAll('[data-destroy-pool]').forEach(b =>
+      b.addEventListener('click', () => openRemovePool(b.dataset.destroyPool, 'destroy')));
     // Pre-fill snapshot dataset datalist
     const dl = document.getElementById('ds-list');
     if (dl) dl.innerHTML = d.pools.map(p => `<option value="${esc(p.name)}">`).join('');
@@ -276,6 +280,11 @@ function renderPool(p) {
         ${attachedDevices(p, 'cache', 'Cache (L2ARC)')}
         ${attachedDevices(p, 'log', 'Log (SLOG)')}
         <button class="btn btn-secondary btn-sm" data-attach="${esc(p.name)}">Add cache or log device</button>
+        <div class="mt-3">${p.protected
+          ? `<span class="text-muted">Cannot be exported or deleted: ${esc(p.protected)}.</span>`
+          : `<button class="btn btn-secondary btn-sm" data-export="${esc(p.name)}">Export</button>
+             <button class="btn btn-danger btn-sm" data-destroy-pool="${esc(p.name)}">Delete pool</button>`}
+        </div>
       </div>
     </div>`;
 }
@@ -929,4 +938,46 @@ async function openDestroyDataset(name) {
       closeModal('modal-dataset');
       loadDatasets();
     }, true);
+}
+
+
+// ── Exporting and deleting a pool ────────────────────────────────────────────
+// Export is undone with Import Pool; Delete is not undone at all. Both list
+// what goes with the pool before anything happens.
+
+async function openRemovePool(pool, action) {
+  let r;
+  try { r = await apiJSON('GET', `/api/storage/pools/${pool}/removal`); }
+  catch (e) { toast(e.message, 'err'); return; }
+  if (r.protected) { toast(`${pool} cannot be removed: ${r.protected}`, 'err'); return; }
+  const destroy = action === 'destroy';
+  const hasShares = r.shares.smb.length + r.shares.nfs.length > 0;
+  datasetDialog(destroy ? `Delete pool — ${pool}` : `Export — ${pool}`, destroy ? 'Delete pool' : 'Export', `
+    ${destroy
+      ? `<div class="alert alert-err"><span>The pool and everything on it is destroyed. This cannot be undone.</span></div>`
+      : `<div class="alert alert-info"><span>The pool leaves this system and is no longer imported at boot.
+          Its data stays on the disks: bring it back with <strong>Import Pool</strong>, here or on another system.</span></div>`}
+    <div class="form-group"><label class="form-label">Datasets (${r.datasets.length})</label>
+      <span class="form-hint mono">${r.datasets.map(esc).join(', ')}</span></div>
+    ${r.encrypted ? `<div class="alert alert-warn"><span>${destroy
+      ? 'It is encrypted: its keyslots on this system are removed, and its USB key opens nothing any more.'
+      : 'It is encrypted: its keyslots stay on this system, and a copy travels with the pool.'}</span></div>` : ''}
+    ${r.policies.length ? `<p class="text-muted">Its snapshot schedules are removed: ${r.policies.map(esc).join(', ')}.</p>` : ''}
+    ${hasShares ? `<div class="form-group"><label class="form-label">Shares on it</label>
+      <div class="device-list">${sharesList(r.shares)}</div>
+      <label class="form-label"><input type="checkbox" id="pool-remove-shares"> Remove these shares too</label></div>` : ''}
+    ${destroy ? `<div class="form-group">
+      <label class="form-label" for="pool-confirm">Type <span class="mono">${esc(pool)}</span> to confirm</label>
+      <input class="input mono" id="pool-confirm" type="text" autocomplete="off"></div>` : ''}`,
+    async () => {
+      const removeShares = !!document.getElementById('pool-remove-shares')?.checked;
+      const res = destroy
+        ? await apiJSON('DELETE', `/api/storage/pools/${pool}?${new URLSearchParams({
+            confirm: document.getElementById('pool-confirm').value.trim(), remove_shares: removeShares })}`)
+        : await apiJSON('POST', `/api/storage/pools/${pool}/export`, { remove_shares: removeShares });
+      toast(`Pool ${pool} ${destroy ? 'deleted' : 'exported'}.`, res.warnings.length ? 'warn' : 'ok');
+      res.warnings.forEach(w => toast(w, 'warn', 8000));
+      closeModal('modal-dataset');
+      loadPools();
+    }, destroy);
 }

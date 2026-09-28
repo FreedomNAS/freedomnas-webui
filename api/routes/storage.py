@@ -12,6 +12,9 @@ GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
 GET  /devices             — block devices, and what is already on them
 POST /pools               — create a pool
+GET  /pools/{pool}/removal — what exporting or destroying it would take along
+POST /pools/{pool}/export — export it (import it again with /pools/import)
+DELETE /pools/{pool}?confirm=… — destroy it
 GET  /usb-devices          — removable partitions that can hold a pool's USB key
 GET  /pools/importable    — pools attached to this system but not imported
 POST /pools/import/inspect — look at one without changing it
@@ -39,6 +42,7 @@ from freedomnas.config import ConfigurationException
 from freedomnas import pools as pool_devices
 from freedomnas import datasets as zfs_datasets
 from freedomnas import pool_import
+from freedomnas import pool_removal
 from freedomnas import shadow
 from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
@@ -63,6 +67,12 @@ async def list_pools(username: str = Depends(authenticate)):
     # What is attached as cache or log is not in `zpool list`: it is in
     # config.yaml, written when the device was attached.
     recorded = {p.get("name"): p for p in get_config().get_pools()}
+    try:
+        rows = zfs_datasets.listing(engine)
+    except (CommandExecutionError, CommandTranslationError):
+        rows = []
+    system_pool = zfs_datasets.root_pool(engine)
+    active = shadow.active_dataset(engine)
 
     pools = []
     for line in stdout.splitlines():
@@ -80,6 +90,7 @@ async def list_pools(username: str = Depends(authenticate)):
                 entry["used_pct"] = _bytes(parts[4].rstrip("%"))
             if len(parts) >= 6:
                 entry["health"] = parts[5]
+            entry["protected"] = pool_removal.problem(engine, parts[0], rows, system_pool, active)
             known = recorded.get(parts[0], {})
             for key in ("cache_devices", "log_devices", "vdev_type", "encrypted"):
                 if known.get(key):
@@ -909,6 +920,90 @@ async def import_existing_pool(body: dict, username: str = Depends(authenticate)
     try:
         return await asyncio.to_thread(_do_import, engine, config, request, body, username)
     except pool_import.ImportProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+def _pool_shares(config, mountpoints) -> dict:
+    found = {"smb": [], "nfs": []}
+    for mountpoint in mountpoints:
+        if pool_import.is_system_path(mountpoint):
+            continue
+        for kind, shares in shares_under(config, mountpoint).items():
+            for share in shares:
+                if all(s["name"] != share["name"] for s in found[kind]):
+                    found[kind].append(share)
+    return found
+
+
+def _pool_policies(config, pool: str):
+    return [p for p in config.get_snapshot_policies()
+            if p.get("dataset") == pool or str(p.get("dataset", "")).startswith(pool + "/")]
+
+
+@router.get("/pools/{pool_name}/removal")
+async def pool_removal_report(pool_name: str, username: str = Depends(authenticate)):
+    engine, config = get_engine(), get_config()
+    try:
+        found = await asyncio.to_thread(pool_removal.contents, engine, pool_name)
+        reason = await asyncio.to_thread(pool_removal.problem, engine, pool_name)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    return {
+        "pool": pool_name,
+        "protected": reason,
+        "datasets": found["datasets"],
+        "encrypted": found["encrypted"],
+        "keyslots": found["keyslots"],
+        "shares": _pool_shares(config, found["mountpoints"]),
+        "policies": [p["dataset"] for p in _pool_policies(config, pool_name)],
+    }
+
+
+def _remove_pool(engine, config, pool: str, action: str, remove_shares: bool) -> dict:
+    found = pool_removal.contents(engine, pool)
+    shares = _pool_shares(config, found["mountpoints"])
+    if (shares["smb"] or shares["nfs"]) and not remove_shares:
+        names = [s["name"] for s in shares["smb"] + shares["nfs"]]
+        raise pool_removal.RemovalProblem(f"Shares use it ({', '.join(names)}): tick that they go too")
+    result = pool_removal.remove(engine, pool, action)
+
+    warnings, removed = [], []
+    for kind, items in shares.items():
+        for share in items:
+            try:
+                remove_share(engine, config, kind, share)
+                removed.append(f"{kind}:{share['name']}")
+            except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+                warnings.append(f"{kind.upper()} share {share['name']} not removed: {exc}")
+    for policy in _pool_policies(config, pool):
+        config.remove_snapshot_policy(policy["dataset"])
+    config.remove_pool(pool)
+    return {**result, "removed_shares": removed, "warnings": warnings}
+
+
+@router.post("/pools/{pool_name}/export")
+async def export_pool(pool_name: str, body: dict, username: str = Depends(authenticate)):
+    engine, config = get_engine(), get_config()
+    try:
+        return await asyncio.to_thread(
+            _remove_pool, engine, config, pool_name, "export", bool(body.get("remove_shares")))
+    except pool_removal.RemovalProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+@router.delete("/pools/{pool_name}")
+async def destroy_pool(pool_name: str, confirm: str = "", remove_shares: bool = False,
+                       username: str = Depends(authenticate)):
+    if confirm != pool_name:
+        return JSONResponse(status_code=422, content={"detail": "Type the pool's name to confirm"})
+    engine, config = get_engine(), get_config()
+    try:
+        return await asyncio.to_thread(_remove_pool, engine, config, pool_name, "destroy", remove_shares)
+    except pool_removal.RemovalProblem as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
