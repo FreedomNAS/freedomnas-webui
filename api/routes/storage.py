@@ -7,6 +7,7 @@ GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
 GET  /devices             — block devices, and what is already on them
 POST /pools               — create a pool
+GET  /usb-devices          — removable partitions that can hold a pool's USB key
 GET  /pools/importable    — pools attached to this system but not imported
 POST /pools/import/inspect — look at one without changing it
 POST /pools/import        — import it, with the shares and users it brings
@@ -33,6 +34,7 @@ from freedomnas.config import ConfigurationException
 from freedomnas import pools as pool_devices
 from freedomnas import pool_import
 from freedomnas import shadow
+from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
 from api.routes.shares import add_nfs_share, add_smb_share, nfs_share_problem
@@ -405,6 +407,7 @@ async def list_devices(username: str = Depends(authenticate)):
         parents[fields["NAME"]] = fields.get("PKNAME", "")
         devices.append({
             "name": fields["NAME"],
+            "parent": fields.get("PKNAME", ""),
             "size": int(fields.get("SIZE") or 0),
             "type": fields.get("TYPE", ""),
             "fstype": fields.get("FSTYPE", ""),
@@ -460,6 +463,19 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
             "detail": f"The passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters"})
 
     engine, config = get_engine(), get_config()
+    usb = [str(d).strip() for d in (body.get("usb_devices") or []) if str(d).strip()]
+    if usb and not encrypt:
+        return JSONResponse(status_code=422, content={
+            "detail": "A USB key only unlocks an encrypted pool"})
+    if usb:
+        removable = set(keymgmt.removable_partitions(engine))
+        for device in usb:
+            if device not in removable:
+                return JSONResponse(status_code=422, content={
+                    "detail": f"{device} is not a partition of a removable USB device"})
+            if device in seen:
+                return JSONResponse(status_code=422, content={
+                    "detail": f"{device} is listed twice — a device belongs to one role"})
     try:
         if encrypt:
             PoolProvisioner(engine).create_encrypted_pool(
@@ -467,7 +483,7 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
                 vdev_type=vdev_type,
                 devices=" ".join(devices),
                 master_passphrase=passphrase,
-                usb_devices=body.get("usb_devices") or [],
+                usb_devices=usb,
             )
         else:
             engine.execute(
@@ -498,6 +514,12 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
     return {"pool": name, "attached": attached, "warnings": attached["errors"]}
 
 
+@router.get("/usb-devices")
+async def usb_devices(username: str = Depends(authenticate)):
+    engine = get_engine()
+    return {"devices": await asyncio.to_thread(keymgmt.removable_partitions, engine)}
+
+
 @router.get("/pools/importable")
 async def importable_pools(username: str = Depends(authenticate)):
     engine = get_engine()
@@ -519,12 +541,20 @@ def _import_request(body: dict):
         return None, "A pool name starts with a letter and holds letters, digits, _ . : -"
     if not isinstance(passphrases, dict):
         return None, "passphrases must map encryption roots to passphrases"
+    unlock = body.get("keyslot_unlock") or None
+    if unlock is not None:
+        if not isinstance(unlock, dict) or unlock.get("method") not in ("usb", "file", "passphrase"):
+            return None, "keyslot_unlock.method is usb, file or passphrase"
+        if len(str(unlock.get("key") or "")) > 4096:
+            return None, "The key file is too large to be a freedomnas.key"
+        unlock = {k: str(v) for k, v in unlock.items() if k in ("method", "key", "passphrase")}
     return {
         "pool_id": pool_id,
         "name": name,
         "force": bool(body.get("force")),
         "root_mountpoint": mountpoint,
         "passphrases": {str(k): str(v) for k, v in passphrases.items()},
+        "keyslot_unlock": unlock,
     }, None
 
 
@@ -601,8 +631,7 @@ def _blocking_problem(report: dict):
         return (f"{c['dataset'] or report['pool']['final_name']} would mount on {c['mountpoint']}: "
                 f"{c['reason']}. Choose another mountpoint for the pool")
     for root in report["encryption_roots"]:
-        if root.get("error") in ("wrong passphrase", "passphrase required",
-                                 "the passphrase may not contain line breaks"):
+        if root.get("blocking"):
             return f"{root['dataset'] or report['pool']['final_name']}: {root['error']}"
     return None
 
@@ -638,7 +667,8 @@ def _do_import(engine, config, request: dict, body: dict, admin_user: str) -> di
     name = report["pool"]["final_name"]
     result = pool_import.import_pool(
         engine, request["pool_id"], name, force=request["force"],
-        root_mountpoint=request["root_mountpoint"], passphrases=request["passphrases"])
+        root_mountpoint=request["root_mountpoint"], passphrases=request["passphrases"],
+        keyslot_unlock=request["keyslot_unlock"])
 
     warnings = []
     try:
@@ -713,7 +743,8 @@ def _do_import(engine, config, request: dict, body: dict, admin_user: str) -> di
             warnings.append(f"NFS share {share['name']} not created: {exc}")
 
     return {"pool": name, "users": created_users, "shares": created_shares,
-            "kept_config": result.get("kept_config"), "warnings": warnings}
+            "kept_config": result.get("kept_config"),
+            "adopted_keyslots": result.get("adopted_keyslots", False), "warnings": warnings}
 
 
 @router.post("/pools/import")

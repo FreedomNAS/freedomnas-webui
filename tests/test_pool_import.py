@@ -231,3 +231,55 @@ def test_a_share_with_a_name_already_used_is_left_alone(client, pools, config, m
     assert r.body["shares"] == []
     assert [s["path"] for s in config.get_smb_shares()] == ["/srv/mine"]
     assert any("already exists here" in w for w in r.body["warnings"])
+
+
+def raw_tree(pool_name, **_):
+    return "\n".join([
+        f"{pool_name}\tmountpoint\t/tank\tdefault", f"{pool_name}\tcanmount\ton\tdefault",
+        f"{pool_name}\tencryption\taes-256-gcm\t-", f"{pool_name}\tencryptionroot\t{pool_name}\t-",
+        f"{pool_name}\tkeyformat\traw\t-", f"{pool_name}\tkeystatus\tunavailable\t-",
+    ])
+
+
+@pytest.fixture
+def freedomnas_encrypted(pools):
+    from freedomnas import keymgmt
+    slots = {"pool": "tank", "slots": {
+        "passphrase": keymgmt.wrap_key(b"k" * 32, b"master passphrase"),
+        "usb": keymgmt.wrap_key(b"k" * 32, b"stick-secret"),
+    }}
+    pools.outputs[("zfs", "dataset_tree")] = raw_tree
+    pools.outputs[("zfs", "dataset_get_property")] = f"{keymgmt.encode_keyslots(slots)}\tlocal"
+    return pools
+
+
+def test_a_freedomnas_encrypted_pool_asks_for_its_key(client, freedomnas_encrypted, config):
+    r = client.post("/api/storage/pools/import/inspect", {"pool_id": "42"})
+    assert r.status == 200
+    [root] = r.body["encryption_roots"]
+    assert root["unlock_methods"] == ["usb", "file", "passphrase"] and root["blocking"]
+    r = client.post("/api/storage/pools/import", {"pool_id": "42"})
+    assert r.status == 422 and "USB key or its Master Passphrase" in r.body["detail"]
+    assert freedomnas_encrypted.called("zfs", "pool_import_id") == []
+
+
+def test_the_key_file_from_the_browser_unlocks_and_the_keyslots_stay_here(client, freedomnas_encrypted, config, tmp_path):
+    import base64
+    key = base64.b64encode(b"stick-secret").decode()
+    r = client.post("/api/storage/pools/import", {
+        "pool_id": "42", "keyslot_unlock": {"method": "file", "key": key}})
+    assert r.status == 200, r.body
+    assert r.body["adopted_keyslots"]
+    assert (tmp_path / "keyslots" / "tank.json").exists()
+    assert all(key not in c.command for c in freedomnas_encrypted.calls)
+
+
+def test_a_wrong_master_passphrase_is_refused(client, freedomnas_encrypted, config):
+    r = client.post("/api/storage/pools/import", {
+        "pool_id": "42", "keyslot_unlock": {"method": "passphrase", "passphrase": "not the one"}})
+    assert r.status == 422 and "wrong Master Passphrase" in r.body["detail"]
+
+
+def test_an_unknown_unlock_method_is_refused(client, freedomnas_encrypted):
+    r = client.post("/api/storage/pools/import/inspect", {"pool_id": "42", "keyslot_unlock": {"method": "guess"}})
+    assert r.status == 422

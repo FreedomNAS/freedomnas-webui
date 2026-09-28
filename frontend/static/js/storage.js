@@ -16,6 +16,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-create-pool')?.addEventListener('click', openPoolForm);
   document.getElementById('f-pool-encrypt')?.addEventListener('change', (e) => {
     document.getElementById('pool-passphrase-group').hidden = !e.target.checked;
+    document.getElementById('pool-usb-group').hidden = !e.target.checked;
+    if (e.target.checked) loadUsbKeys();
   });
   document.getElementById('form-pool').addEventListener('submit', submitPool);
 
@@ -318,6 +320,7 @@ async function openPoolForm() {
   list.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
   document.getElementById('form-pool').reset();
   document.getElementById('pool-passphrase-group').hidden = true;
+  document.getElementById('pool-usb-group').hidden = true;
   openModal('modal-pool');
 
   let devices;
@@ -348,6 +351,33 @@ async function openPoolForm() {
   }
 }
 
+async function loadUsbKeys() {
+  const box = document.getElementById('pool-usb');
+  box.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  try {
+    const [usb, all] = await Promise.all([
+      apiJSON('GET', '/api/storage/usb-devices'),
+      apiJSON('GET', '/api/storage/devices'),
+    ]);
+    const info = Object.fromEntries(all.devices.map(d => [d.name, d]));
+    if (!usb.devices.length) {
+      box.innerHTML = '<span class="text-muted">No USB stick found. Plug one in and tick Encrypt again.</span>';
+      return;
+    }
+    box.innerHTML = usb.devices.map(name => {
+      const d = info[name] || {};
+      const parent = info[d.parent] || {};
+      return `<label class="device-row">
+        <input type="checkbox" value="${esc(name)}">
+        <span class="mono">${esc(name)}</span>
+        <span class="text-muted">${humanSize(d.size)}${parent.model ? ' — ' + esc(parent.model) : ''}${d.fstype ? ' — ' + esc(d.fstype) : ''}</span>
+      </label>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = errorState(e.message);
+  }
+}
+
 // `zpool list -p` reports exact byte counts, which are unreadable as they
 // stand; a profile without `-p` sends a string such as '3.6T' instead, and
 // that is already how it should be shown.
@@ -372,6 +402,7 @@ async function submitPool(e) {
   const log = document.getElementById('f-pool-log')?.value || '';
   const encrypted = document.getElementById('f-pool-encrypt').checked;
   const passphrase = document.getElementById('f-pool-passphrase').value;
+  const usb = encrypted ? [...document.querySelectorAll('#pool-usb input:checked')].map(i => i.value) : [];
 
   if (!devices.length) { toast('Select at least one data device.', 'err'); return; }
   if (!await confirm('Create Pool', `Create <strong>${esc(name)}</strong> on:<br><span class="mono">${devices.map(esc).join('<br>')}</span><br><br>Everything on those devices will be destroyed.`, 'Create and erase')) return;
@@ -387,6 +418,7 @@ async function submitPool(e) {
       log_devices: log ? [log] : [],
       encrypted,
       master_passphrase: encrypted ? passphrase : '',
+      usb_devices: usb,
     });
     if (res.warnings?.length) {
       toast(`Pool ${res.pool} created, but ${res.warnings[0].role} did not attach.`, 'warn');
@@ -410,11 +442,13 @@ async function submitPool(e) {
 
 let _importReport = null;
 let _importPassphrases = {};
+let _importUnlock = {};
 
 async function openImportForm() {
   const list = document.getElementById('import-pools');
   _importReport = null;
   _importPassphrases = {};
+  _importUnlock = {};
   document.getElementById('form-import').reset();
   document.getElementById('import-report').innerHTML = '';
   document.getElementById('import-force-group').hidden = true;
@@ -442,6 +476,7 @@ async function openImportForm() {
   list.querySelectorAll('input[name="import-pool"]').forEach(r => r.addEventListener('change', () => {
     _importReport = null;
     _importPassphrases = {};
+    _importUnlock = {};
     document.getElementById('import-report').innerHTML = '';
     document.getElementById('btn-import-submit').disabled = true;
     document.getElementById('f-import-force').checked = false;
@@ -465,6 +500,11 @@ function importRequest() {
     if (i.value) _importPassphrases[i.dataset.passphrase] = i.value;
   });
   body.passphrases = {..._importPassphrases};
+  const method = document.querySelector('input[name="unlock-method"]:checked');
+  if (method) _importUnlock.method = method.value;
+  const master = document.getElementById('f-unlock-passphrase');
+  if (master && master.value) _importUnlock.passphrase = master.value;
+  if (_importUnlock.method) body.keyslot_unlock = {..._importUnlock};
   return body;
 }
 
@@ -490,7 +530,7 @@ async function checkImport() {
 function importBlocked(r) {
   if (r.refused.length) return true;
   if (r.name_taken || r.conflicts.length) return true;
-  return r.encryption_roots.some(k => k.keyformat === 'passphrase' && !k.unlocked);
+  return r.encryption_roots.some(k => k.blocking);
 }
 
 function renderImportReport(r, asked) {
@@ -521,7 +561,26 @@ function renderImportReport(r, asked) {
 
   for (const k of r.encryption_roots) {
     const label = esc(k.dataset || r.pool.final_name);
-    if (k.keyformat !== 'passphrase') {
+    if (k.unlock_methods?.length && !k.unlocked) {
+      const m = k.unlock_methods;
+      const pick = (v) => _importUnlock.method === v ? ' checked' : '';
+      parts.push(`<div class="form-group">
+          <label class="form-label">Unlock ${label} — encrypted by FreedomNAS</label>
+          <div class="device-list">
+          ${m.includes('usb') ? `<label class="device-row"><input type="radio" name="unlock-method" value="usb"${pick('usb')}>
+              USB key plugged into this NAS</label>` : ''}
+          ${m.includes('file') ? `<label class="device-row"><input type="radio" name="unlock-method" value="file"${pick('file')}>
+              <span>The <span class="mono">freedomnas.key</span> file from this computer</span>
+              <input type="file" id="f-unlock-file"></label>` : ''}
+          ${m.includes('passphrase') ? `<label class="device-row"><input type="radio" name="unlock-method" value="passphrase"${pick('passphrase')}>
+              <span>Master Passphrase</span>
+              <input type="password" class="input" id="f-unlock-passphrase" autocomplete="off"></label>` : ''}
+          </div>
+          ${k.error && asked.keyslot_unlock ? `<span class="form-hint text-err">${esc(k.error)}</span>` : ''}
+        </div>`);
+    } else if (k.unlock_methods?.length) {
+      parts.push(`<div class="alert alert-ok"><span>${label}: unlocked.</span></div>`);
+    } else if (k.keyformat !== 'passphrase') {
       parts.push(`<div class="alert alert-warn"><span>${label} is encrypted with a
         ${esc(k.keyformat || 'non-passphrase')} key: it cannot be unlocked here and stays locked.</span></div>`);
     } else if (!k.unlocked) {
@@ -548,6 +607,9 @@ function renderImportReport(r, asked) {
         <td>${humanSize(d.used)}</td></tr>`).join('')}</tbody>
     </table></div>`);
 
+  if (r.config_locked) {
+    parts.push('<div class="alert alert-info"><span>This pool comes from FreedomNAS: unlock it, then Check again, to see its shares and users.</span></div>');
+  }
   if (r.config_error) {
     parts.push(`<div class="alert alert-warn"><span>Its FreedomNAS configuration could not be read: ${esc(r.config_error)}</span></div>`);
   }
@@ -566,9 +628,26 @@ function renderImportReport(r, asked) {
   parts.push('<div id="import-users"></div>');
 
   out.innerHTML = parts.join('');
+  document.getElementById('f-unlock-file')?.addEventListener('change', readUnlockFile);
   out.querySelectorAll('[data-share]').forEach(c => c.addEventListener('change', () => renderImportUsers(r)));
   renderImportUsers(r);
   document.getElementById('btn-import-submit').disabled = importBlocked(r);
+}
+
+function readUnlockFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const bytes = new Uint8Array(reader.result);
+    let text = '';
+    bytes.forEach(b => { text += String.fromCharCode(b); });
+    _importUnlock.key = btoa(text);
+    _importUnlock.method = 'file';
+    const radio = document.querySelector('input[name="unlock-method"][value="file"]');
+    if (radio) radio.checked = true;
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 function importUsersNeeded(r) {

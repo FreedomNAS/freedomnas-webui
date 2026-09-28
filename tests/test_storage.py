@@ -194,9 +194,9 @@ def test_devices_are_parsed_from_lsblk_and_marked_in_use(client, engine):
     )
     r = client.get("/api/storage/devices")
     assert r.body == {"devices": [
-        {"name": "/dev/sda", "size": 4000787030016, "type": "disk", "fstype": "",
+        {"name": "/dev/sda", "parent": "", "size": 4000787030016, "type": "disk", "fstype": "",
          "mountpoint": "", "model": "WDC WD40", "in_use": False},
-        {"name": "/dev/sdb1", "size": 536870912, "type": "part", "fstype": "vfat",
+        {"name": "/dev/sdb1", "parent": "", "size": 536870912, "type": "part", "fstype": "vfat",
          "mountpoint": "/boot/efi", "model": "", "in_use": True},
     ]}
 
@@ -329,3 +329,37 @@ def test_an_encrypted_pool_gets_its_keyslots_and_no_secret_in_the_config(client,
     assert passphrase not in config.config_path.read_text()
     assert passphrase not in json.dumps(slots)
     assert all(passphrase not in c.command for c in engine.calls)
+
+
+def test_the_usb_devices_are_the_removable_partitions(client, engine):
+    engine.outputs[("media", "list_removable")] = "sda 0 disk\nsda1 0 part\nsdh 1 disk\nsdh1 1 part"
+    r = client.get("/api/storage/usb-devices")
+    assert r.status == 200 and r.body == {"devices": ["/dev/sdh1"]}
+
+
+@pytest.mark.parametrize("usb, encrypted, detail", [
+    (["/dev/sda1"], True, "not a partition of a removable"),
+    (["/dev/sdh1"], False, "only unlocks an encrypted pool"),
+])
+def test_a_usb_key_goes_only_on_a_removable_stick_of_an_encrypted_pool(client, engine, usb, encrypted, detail):
+    engine.outputs[("media", "list_removable")] = "sda1 0 part\nsdh1 1 part"
+    r = client.post("/api/storage/pools", {
+        "name": "vault", "devices": ["/dev/sdc"], "encrypted": encrypted,
+        "master_passphrase": "correct horse battery", "usb_devices": usb,
+    })
+    assert r.status == 422 and detail in r.body["detail"]
+    assert engine.called("media", "mount_rw") == []
+    assert engine.called("zfs", "pool_create_encrypted") == []
+
+
+def test_the_usb_key_is_written_and_the_keyslots_go_on_the_pool(client, engine, config, tmp_path):
+    engine.outputs[("media", "list_removable")] = "sdh1 1 part"
+    r = client.post("/api/storage/pools", {
+        "name": "vault", "devices": ["/dev/sdc"], "encrypted": True,
+        "master_passphrase": "correct horse battery", "usb_devices": ["/dev/sdh1"],
+    })
+    assert r.status == 200
+    [mount] = engine.called("media", "mount_rw")
+    assert mount.kwargs["device"] == "/dev/sdh1"
+    [prop] = [c for c in engine.called("zfs", "dataset_set") if "org.freedomnas:keyslots" in c.command]
+    assert prop.argv[-1] == "vault"

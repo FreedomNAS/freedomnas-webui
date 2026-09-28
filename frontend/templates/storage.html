@@ -85,6 +85,13 @@
           <input id="f-pool-passphrase" class="input" type="password" autocomplete="new-password">
           <span class="form-hint">At least 12 characters. Lose it and the pool is unreadable.</span>
         </div>
+        <div class="form-group" id="pool-usb-group" hidden>
+          <label class="form-label">USB keys — optional</label>
+          <div id="pool-usb" class="device-list"></div>
+          <span class="form-hint">A <span class="mono">freedomnas.key</span> file is written onto each ticked stick
+            (what is already on it stays). With a stick plugged in, the pool unlocks by itself at boot;
+            anyone holding one can unlock it, so keep a spare away from the NAS.</span>
+        </div>
 
         <div class="form-group">
           <label class="form-label">
