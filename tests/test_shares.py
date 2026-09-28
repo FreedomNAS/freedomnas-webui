@@ -51,6 +51,8 @@ def test_an_smb_share_is_created_reloaded_and_recorded(client, engine, config, s
     assert saved["path"] == "/tank/foto"
     assert saved["valid_users"] == ["admin"]
     assert saved["guest_ok"] is False
+    assert saved["acl"] == "Everyone:R,admin:F"
+    assert saved["comment"] == "foto"
 
 
 def test_a_comment_with_spaces_stays_the_comment(client, engine, smb_ready):

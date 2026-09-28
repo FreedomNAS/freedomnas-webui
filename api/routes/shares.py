@@ -80,6 +80,8 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
         config.add_smb_share({
             "name": share_name,
             "path": path,
+            "comment": comment,
+            "acl": acl,
             "read_only": read_only,
             "valid_users": valid_users,
             "guest_ok": False,
