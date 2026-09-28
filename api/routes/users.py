@@ -123,6 +123,9 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
             uid=uid or "",
             gid=gid or "",
         )
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    try:
         _set_password(engine, new_user, password)
         config.add_user({
             "username": new_user,
@@ -132,8 +135,22 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
             **({"gid": gid} if gid else {}),
         })
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        _undo_create(engine, new_user)
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"username": new_user}
+
+
+def _undo_create(engine, target: str) -> None:
+    """
+    Take back an account whose creation failed halfway, so that it neither
+    lingers on the system unknown to the configuration nor blocks the next
+    attempt with "user already exists".
+    """
+    try:
+        _delete_samba_user(engine, target)
+        engine.execute("users", "delete", username=target, check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        pass
 
 
 @router.post("/{target}/password")

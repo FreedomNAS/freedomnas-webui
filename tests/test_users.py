@@ -142,3 +142,23 @@ def test_a_deleted_user_leaves_the_samba_database_first(client, engine, config):
     assert smb.argv == ["smbpasswd", "-x", "carla"]
     actions = engine.actions()
     assert actions.index(("samba", "delete_user")) < actions.index(("users", "delete"))
+
+
+def test_a_user_whose_samba_password_fails_is_taken_back(client, engine, config):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("samba", "set_user_password")] = CommandExecutionError("smbpasswd: can't load smb.conf")
+    r = client.post("/api/users/", {"username": "carla", "password": "a long password"})
+    assert r.status == 500
+    assert "smb.conf" in r.body["detail"]
+    [delete] = engine.called("users", "delete")
+    assert delete.argv == ["userdel", "-r", "carla"]
+    assert engine.called("samba", "delete_user")
+    assert config.get_users() == []
+
+
+def test_an_account_that_already_existed_is_never_deleted(client, engine, config):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("users", "create")] = CommandExecutionError("useradd: user 'carla' already exists")
+    assert client.post("/api/users/", {"username": "carla", "password": "a long password"}).status == 500
+    assert engine.called("users", "delete") == []
+    assert engine.called("samba", "delete_user") == []
