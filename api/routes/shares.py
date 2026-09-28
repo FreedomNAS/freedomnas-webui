@@ -194,3 +194,42 @@ async def delete_nfs(share_name: str, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": f"NFS share {share_name} deleted"}
+
+
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix.rstrip("/") + "/")
+
+
+def shares_under(config, path: str) -> dict:
+    """The SMB and NFS shares whose directory is `path` or below it."""
+    if not path.startswith("/"):
+        return {"smb": [], "nfs": []}
+    return {
+        "smb": [s for s in config.get_smb_shares() if _under(str(s.get("path", "")), path)],
+        "nfs": [s for s in config.get_nfs_shares() if _under(str(s.get("path", "")), path)],
+    }
+
+
+def move_share(engine, config, kind: str, share: dict, new_path: str) -> None:
+    """
+    Point a share at the directory its dataset moved to. Samba drops a
+    usershare whose directory is gone on its own, so the old one may
+    already have vanished when this runs.
+    """
+    if kind == "smb":
+        engine.execute("samba", "delete_share", share_name=share["name"], check=False)
+        add_smb_share(engine, config, {**share, "path": new_path})
+    else:
+        engine.execute("nfs", "export_remove", path=share["path"])
+        add_nfs_share(engine, config, {**share, "path": new_path})
+
+
+def remove_share(engine, config, kind: str, share: dict) -> None:
+    if kind == "smb":
+        engine.execute("samba", "delete_share", share_name=share["name"], check=False)
+        engine.execute("samba", "reload_config")
+        config.remove_smb_share(share["name"])
+    else:
+        engine.execute("nfs", "export_remove", path=share["path"])
+        engine.execute("nfs", "exportfs_reload")
+        config.remove_nfs_share(share["name"])

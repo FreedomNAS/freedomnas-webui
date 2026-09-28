@@ -21,6 +21,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('form-pool').addEventListener('submit', submitPool);
 
+  bindModalClose('modal-dataset');
+  document.getElementById('form-dataset').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (_datasetSubmit) _datasetSubmit();
+  });
+
   bindModalClose('modal-import');
   document.getElementById('btn-import-pool')?.addEventListener('click', openImportForm);
   document.getElementById('btn-import-check').addEventListener('click', checkImport);
@@ -115,8 +121,15 @@ async function loadDatasets() {
   el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
   try {
     const d = await apiJSON('GET', '/api/storage/datasets');
-    if (!d.datasets?.length) { el.innerHTML = emptyState('No datasets found.'); return; }
-    el.innerHTML = `
+    _datasetRows = d.datasets || [];
+    const header = `<div class="section-header">
+        <span class="section-title">Datasets</span>
+        <button class="btn btn-primary btn-sm" id="btn-create-dataset">Create Dataset</button>
+      </div>`;
+    if (!_datasetRows.length) {
+      el.innerHTML = header + emptyState('No datasets found.');
+    } else {
+      el.innerHTML = header + `
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -124,22 +137,35 @@ async function loadDatasets() {
             <th class="advanced-only"></th>
           </tr></thead>
           <tbody>
-            ${d.datasets.map(r => `
+            ${_datasetRows.map(r => `
               <tr>
-                <td class="mono">${esc(r.name)}</td>
-                <td>${esc(r.used)}</td>
-                <td>${esc(r.avail)}</td>
-                <td>${esc(r.refer)}</td>
+                <td class="mono">${esc(r.name)}${r.protected
+                  ? ` <span class="badge badge-muted" title="${esc(r.protected)}">system</span>` : ''}</td>
+                <td>${poolSize(r.used)}</td>
+                <td>${poolSize(r.avail)}</td>
+                <td>${poolSize(r.refer)}</td>
                 <td class="mono text-muted">${esc(r.mountpoint)}</td>
-                <td class="advanced-only">
+                <td class="advanced-only" style="white-space: nowrap">${r.protected ? '' : `
                   <button class="btn btn-secondary btn-sm" data-props="${esc(r.name)}">Properties</button>
+                  <button class="btn btn-secondary btn-sm" data-move="${esc(r.name)}">Mountpoint</button>
+                  ${r.name.includes('/') ? `
+                  <button class="btn btn-secondary btn-sm" data-rename="${esc(r.name)}">Rename</button>
+                  <button class="btn btn-danger btn-sm" data-destroy="${esc(r.name)}">Delete</button>` : ''}`}
                 </td>
               </tr>`).join('')}
           </tbody>
         </table>
       </div>`;
+    }
+    el.querySelector('#btn-create-dataset').addEventListener('click', openCreateDataset);
     el.querySelectorAll('[data-props]').forEach(b =>
       b.addEventListener('click', () => openProperties(b.dataset.props)));
+    el.querySelectorAll('[data-move]').forEach(b =>
+      b.addEventListener('click', () => openMoveDataset(b.dataset.move)));
+    el.querySelectorAll('[data-rename]').forEach(b =>
+      b.addEventListener('click', () => openRenameDataset(b.dataset.rename)));
+    el.querySelectorAll('[data-destroy]').forEach(b =>
+      b.addEventListener('click', () => openDestroyDataset(b.dataset.destroy)));
   } catch (e) {
     el.innerHTML = errorState(e.message);
   }
@@ -702,4 +728,205 @@ async function submitImport(e) {
     toast(err.message, 'err');
     btn.disabled = false;
   }
+}
+
+
+
+// ── Managing datasets ────────────────────────────────────────────────────────
+// One dialog, filled for each action. Datasets of the pool the system runs
+// from, and .freedomnas, carry no buttons: the API refuses them anyway.
+
+let _datasetRows = [];
+let _datasetSubmit = null;
+
+function datasetDialog(title, button, html, submit, danger = false) {
+  document.getElementById('dataset-title').textContent = title;
+  document.getElementById('dataset-body').innerHTML = html;
+  const btn = document.getElementById('btn-dataset-submit');
+  btn.textContent = button;
+  btn.className = `btn ${danger ? 'btn-danger' : 'btn-primary'}`;
+  btn.disabled = false;
+  _datasetSubmit = async () => {
+    btn.disabled = true;
+    try { await submit(); } catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; }
+  };
+  openModal('modal-dataset');
+}
+
+function mountpointChoice(current, allowInherit = true) {
+  return `<div class="form-group">
+      <label class="form-label">Mountpoint</label>
+      <div class="device-list">
+        ${allowInherit ? `<label class="device-row"><input type="radio" name="ds-mode" value="inherit" checked>
+          <span>Inherit from the parent</span> <span class="text-muted mono" id="ds-inherit-hint"></span></label>` : ''}
+        <label class="device-row"><input type="radio" name="ds-mode" value="path"${allowInherit ? '' : ' checked'}>
+          <span>This path</span>
+          <input class="input mono" id="ds-mountpoint" type="text" value="${esc(current || '')}" placeholder="/mnt/data" autocomplete="off"></label>
+        <label class="device-row"><input type="radio" name="ds-mode" value="none">
+          <span>Not mounted</span> <span class="text-muted">— reachable only through its children</span></label>
+      </div>
+      <span class="form-hint">Not a system directory, nor one already in use or holding files.</span>
+    </div>`;
+}
+
+function chosenMountpoint() {
+  const mode = document.querySelector('input[name="ds-mode"]:checked')?.value || 'inherit';
+  return { mode, mountpoint: mode === 'path' ? document.getElementById('ds-mountpoint').value.trim() : '' };
+}
+
+async function openCreateDataset() {
+  if (!propCatalogue) {
+    try { propCatalogue = (await apiJSON('GET', '/api/storage/properties')).properties; }
+    catch (e) { toast(e.message, 'err'); return; }
+  }
+  const parents = _datasetRows.filter(r => !r.protected);
+  if (!parents.length) { toast('No pool to create a dataset in: create or import one first.', 'err'); return; }
+  const extras = Object.entries(propCatalogue)
+    .filter(([name, spec]) => spec.create_only || name === 'compression' || name === 'quota')
+    .map(([name, spec]) => {
+      const gate = spec.level === 'expert' ? ' expert-only' : spec.level === 'advanced' ? ' advanced-only' : '';
+      const control = spec.type === 'enum'
+        ? `<select class="select" data-new-prop="${esc(name)}"><option value="">inherit / default</option>
+             ${spec.values.map(v => `<option>${esc(v)}</option>`).join('')}</select>`
+        : `<input class="input" type="text" data-new-prop="${esc(name)}" placeholder="e.g. 500G — empty for none">`;
+      return `<div class="form-group${gate}"><label class="form-label">${esc(name)}</label>${control}
+        ${spec.help ? `<span class="form-hint">${esc(spec.help)}</span>` : ''}</div>`;
+    }).join('');
+  datasetDialog('Create Dataset', 'Create', `
+    <div class="form-group">
+      <label class="form-label" for="ds-parent">Inside</label>
+      <select class="select mono" id="ds-parent">
+        ${parents.map(r => `<option value="${esc(r.name)}" data-mp="${esc(r.mountpoint)}">${esc(r.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="ds-name">Name</label>
+      <input class="input" id="ds-name" type="text" placeholder="media" autocomplete="off">
+      <span class="form-hint">A letter or digit, then letters, digits, <span class="mono">_ . : -</span></span>
+    </div>
+    ${mountpointChoice('')}
+    ${extras}`, async () => {
+      const properties = {};
+      document.querySelectorAll('[data-new-prop]').forEach(i => { if (i.value.trim()) properties[i.dataset.newProp] = i.value.trim(); });
+      const res = await apiJSON('POST', '/api/storage/datasets', {
+        parent: document.getElementById('ds-parent').value,
+        name: document.getElementById('ds-name').value.trim(),
+        mountpoint_mode: chosenMountpoint().mode,
+        mountpoint: chosenMountpoint().mountpoint,
+        properties,
+      });
+      toast(`Dataset ${res.dataset} created.`, 'ok');
+      closeModal('modal-dataset');
+      loadDatasets();
+    });
+  const hint = () => {
+    const opt = document.getElementById('ds-parent').selectedOptions[0];
+    const mp = opt?.dataset.mp || '';
+    const name = document.getElementById('ds-name').value.trim() || '<name>';
+    document.getElementById('ds-inherit-hint').textContent =
+      mp.startsWith('/') ? `${mp.replace(/\/$/, '')}/${name}` : '(not mounted)';
+  };
+  document.getElementById('ds-parent').addEventListener('change', hint);
+  document.getElementById('ds-name').addEventListener('input', hint);
+  hint();
+}
+
+function sharesList(shares) {
+  const all = [...shares.smb.map(s => ['SMB', s]), ...shares.nfs.map(s => ['NFS', s])];
+  return all.map(([k, s]) => `<div class="device-row"><span class="badge badge-info">${k}</span>
+    <span class="mono">${esc(s.name)}</span><span class="text-muted mono">${esc(s.path)}</span></div>`).join('');
+}
+
+function reportShares(res, verb) {
+  toast(`${verb}: ${res.dataset} now mounts on ${res.new}.`, res.shares.warnings.length ? 'warn' : 'ok');
+  res.shares.warnings.forEach(w => toast(w, 'warn', 8000));
+}
+
+async function openMoveDataset(name) {
+  let deps;
+  try { deps = await apiJSON('GET', `/api/storage/datasets/${name}/dependents`); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const hasShares = deps.shares.smb.length + deps.shares.nfs.length > 0;
+  datasetDialog(`Mountpoint — ${name}`, 'Move', `
+    <p class="text-muted">Now: <span class="mono">${esc(deps.mountpoint)}</span> (${esc(deps.mountpoint_source)}).
+      Children that inherit it move along.</p>
+    ${mountpointChoice(deps.mountpoint.startsWith('/') ? deps.mountpoint : '', name.includes('/'))}
+    ${hasShares ? `<div class="form-group"><label class="form-label">Shares under it</label>
+      <div class="device-list">${sharesList(deps.shares)}</div>
+      <label class="form-label"><input type="checkbox" id="ds-update-shares" checked> Point them at the new place</label></div>` : ''}`,
+    async () => {
+      const choice = chosenMountpoint();
+      const res = await apiJSON('PUT', `/api/storage/datasets/${name}/mountpoint`, {
+        mode: choice.mode, mountpoint: choice.mountpoint,
+        update_shares: !!document.getElementById('ds-update-shares')?.checked,
+      });
+      reportShares(res, 'Moved');
+      closeModal('modal-dataset');
+      loadDatasets();
+    });
+  if (deps.mountpoint_source === 'local') {
+    const path = document.querySelector('input[name="ds-mode"][value="path"]');
+    if (path) path.checked = true;
+  }
+}
+
+async function openRenameDataset(name) {
+  let deps;
+  try { deps = await apiJSON('GET', `/api/storage/datasets/${name}/dependents`); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const hasShares = deps.shares.smb.length + deps.shares.nfs.length > 0;
+  const moves = deps.mountpoint_source !== 'local';
+  datasetDialog(`Rename — ${name}`, 'Rename', `
+    <div class="form-group">
+      <label class="form-label" for="ds-new-name">New name</label>
+      <input class="input mono" id="ds-new-name" type="text" value="${esc(name)}" autocomplete="off">
+      <span class="form-hint">Within the same pool. Another parent moves it there.
+        ${moves ? 'Its mountpoint is inherited, so it moves with the name.' : 'Its mountpoint is its own and stays where it is.'}</span>
+    </div>
+    ${deps.policies.length ? `<p class="text-muted">Its snapshot schedules follow the new name.</p>` : ''}
+    ${hasShares && moves ? `<div class="form-group"><label class="form-label">Shares under it</label>
+      <div class="device-list">${sharesList(deps.shares)}</div>
+      <label class="form-label"><input type="checkbox" id="ds-update-shares" checked> Point them at the new place</label></div>` : ''}`,
+    async () => {
+      const res = await apiJSON('POST', `/api/storage/datasets/${name}/rename`, {
+        new_name: document.getElementById('ds-new-name').value.trim(),
+        update_shares: !!document.getElementById('ds-update-shares')?.checked,
+      });
+      reportShares(res, 'Renamed');
+      closeModal('modal-dataset');
+      loadDatasets();
+    });
+}
+
+async function openDestroyDataset(name) {
+  let deps;
+  try { deps = await apiJSON('GET', `/api/storage/datasets/${name}/dependents`); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const hasShares = deps.shares.smb.length + deps.shares.nfs.length > 0;
+  const along = deps.children.length + deps.snapshots.length > 0;
+  datasetDialog(`Delete — ${name}`, 'Delete', `
+    <div class="alert alert-err"><span>Everything in <span class="mono">${esc(name)}</span> is destroyed. This cannot be undone.</span></div>
+    ${along ? `<div class="form-group">
+      <label class="form-label"><input type="checkbox" id="ds-recursive">
+        Also destroy ${deps.children.length} child dataset(s) and ${deps.snapshots.length} snapshot(s)</label>
+      ${deps.children.length ? `<span class="form-hint mono">${deps.children.map(esc).join(', ')}</span>` : ''}</div>` : ''}
+    ${hasShares ? `<div class="form-group"><label class="form-label">Shares under it</label>
+      <div class="device-list">${sharesList(deps.shares)}</div>
+      <label class="form-label"><input type="checkbox" id="ds-remove-shares"> Remove these shares too</label></div>` : ''}
+    <div class="form-group">
+      <label class="form-label" for="ds-confirm">Type <span class="mono">${esc(name)}</span> to confirm</label>
+      <input class="input mono" id="ds-confirm" type="text" autocomplete="off">
+    </div>`,
+    async () => {
+      const q = new URLSearchParams({
+        confirm: document.getElementById('ds-confirm').value.trim(),
+        recursive: !!document.getElementById('ds-recursive')?.checked,
+        remove_shares: !!document.getElementById('ds-remove-shares')?.checked,
+      });
+      const res = await apiJSON('DELETE', `/api/storage/datasets/${name}?${q}`);
+      toast(`Dataset ${res.dataset} deleted.`, res.warnings.length ? 'warn' : 'ok');
+      res.warnings.forEach(w => toast(w, 'warn', 8000));
+      closeModal('modal-dataset');
+      loadDatasets();
+    }, true);
 }

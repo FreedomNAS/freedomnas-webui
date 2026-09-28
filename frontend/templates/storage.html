@@ -141,6 +141,25 @@
   </div>
 </div>
 
+<!-- Dataset actions: create, mountpoint, rename, destroy -->
+<div id="modal-dataset" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <span class="modal-title" id="dataset-title"></span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-dataset">
+      <div class="modal-body" id="dataset-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-dataset-submit" class="btn btn-primary"></button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Dataset properties: reachable only above assisted level -->
 <div id="modal-properties" class="modal-backdrop" role="dialog" aria-modal="true">
   <div class="modal modal-wide">

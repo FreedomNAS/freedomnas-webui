@@ -3,6 +3,11 @@
 
 GET  /pools               — list ZFS pools
 GET  /datasets            — list ZFS datasets
+POST /datasets            — create a dataset
+GET  /datasets/{name}/dependents — children, snapshots, shares and policies it has
+PUT  /datasets/{name}/mountpoint — move it (inherit, a path, or none)
+POST /datasets/{name}/rename — rename it within its pool
+DELETE /datasets/{name}   — destroy it
 GET  /snapshots           — list snapshots across all datasets
 POST /snapshots           — create a snapshot
 GET  /devices             — block devices, and what is already on them
@@ -32,12 +37,15 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas import pools as pool_devices
+from freedomnas import datasets as zfs_datasets
 from freedomnas import pool_import
 from freedomnas import shadow
 from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
-from api.routes.shares import add_nfs_share, add_smb_share, nfs_share_problem
+from api.routes.shares import (
+    add_nfs_share, add_smb_share, move_share, nfs_share_problem, remove_share, shares_under,
+)
 from api.routes.users import create_account, password_problem
 
 logger = logging.getLogger("freedomnas.webui.storage")
@@ -99,18 +107,163 @@ async def list_datasets(username: str = Depends(authenticate)):
         stdout, _ = engine.execute("zfs", "dataset_list")
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    system_pool = zfs_datasets.root_pool(engine)
+    rows = [(p[0], p[4]) for p in (line.split("\t") for line in stdout.splitlines()) if len(p) >= 5]
     datasets = []
     for line in stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 5:
             datasets.append({
                 "name": parts[0],
-                "used": parts[1],
-                "avail": parts[2],
-                "refer": parts[3],
+                "used": _bytes(parts[1]),
+                "avail": _bytes(parts[2]),
+                "refer": _bytes(parts[3]),
                 "mountpoint": parts[4],
+                "protected": zfs_datasets.subtree_reason(rows, parts[0], system_pool),
             })
     return {"datasets": datasets}
+
+
+@router.post("/datasets")
+async def create_dataset(body: dict, username: str = Depends(authenticate)):
+    parent = str(body.get("parent") or "").strip()
+    name = str(body.get("name") or "").strip()
+    mode = str(body.get("mountpoint_mode") or "inherit")
+    mountpoint = str(body.get("mountpoint") or "").strip()
+    wanted = {str(k): str(v).strip() for k, v in (body.get("properties") or {}).items()
+              if str(v).strip() != ""}
+    catalogue = _catalogue()
+    errors = [e for e in (_validate(catalogue, k, v, creating=True) for k, v in wanted.items()) if e]
+    if errors:
+        return JSONResponse(status_code=422, content={"detail": "; ".join(errors)})
+    engine = get_engine()
+    try:
+        created = await asyncio.to_thread(
+            zfs_datasets.create, engine, parent, name, mode, mountpoint, wanted)
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"dataset": created}
+
+
+def _policies_of(config, name: str):
+    return [p for p in config.get_snapshot_policies()
+            if p.get("dataset") == name or str(p.get("dataset", "")).startswith(name + "/")]
+
+
+@router.get("/datasets/{dataset:path}/dependents")
+async def dataset_dependents(dataset: str, username: str = Depends(authenticate)):
+    engine, config = get_engine(), get_config()
+    try:
+        found = await asyncio.to_thread(zfs_datasets.dependents, engine, dataset)
+        mountpoint, source = await asyncio.to_thread(zfs_datasets.mountpoint_of, engine, dataset)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    return {
+        "dataset": dataset,
+        "mountpoint": mountpoint,
+        "mountpoint_source": source,
+        "children": found["children"],
+        "snapshots": found["snapshots"],
+        "shares": shares_under(config, mountpoint),
+        "policies": [p["dataset"] for p in _policies_of(config, dataset)],
+        "protected": zfs_datasets.subtree_reason(
+            zfs_datasets.listing(engine), dataset, zfs_datasets.root_pool(engine)),
+    }
+
+
+def _follow_shares(engine, config, old: str, new: str, update: bool) -> dict:
+    """Shares under a moved dataset: pointed at the new place, or reported as left behind."""
+    moved, left, warnings = [], [], []
+    if old == new:
+        return {"moved": moved, "left": left, "warnings": warnings}
+    for kind, shares in shares_under(config, old).items():
+        for share in shares:
+            target = new + share["path"][len(old):] if new.startswith("/") else ""
+            if not update or not target or not posixpath.isdir(target):
+                left.append(f"{kind}:{share['name']}")
+                continue
+            try:
+                move_share(engine, config, kind, share, target)
+                moved.append(f"{kind}:{share['name']}")
+            except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+                left.append(f"{kind}:{share['name']}")
+                warnings.append(f"{kind.upper()} share {share['name']} not moved: {exc}")
+    if left:
+        warnings.append("These shares still point at the old place: " + ", ".join(left))
+    return {"moved": moved, "left": left, "warnings": warnings}
+
+
+@router.put("/datasets/{dataset:path}/mountpoint")
+async def move_dataset(dataset: str, body: dict, username: str = Depends(authenticate)):
+    engine, config = get_engine(), get_config()
+    try:
+        change = await asyncio.to_thread(
+            zfs_datasets.set_mountpoint, engine, dataset,
+            str(body.get("mode") or ""), str(body.get("mountpoint") or "").strip())
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    shares = await asyncio.to_thread(
+        _follow_shares, engine, config, change["old"], change["new"], bool(body.get("update_shares")))
+    return {"dataset": dataset, **change, "shares": shares}
+
+
+@router.post("/datasets/{dataset:path}/rename")
+async def rename_dataset(dataset: str, body: dict, username: str = Depends(authenticate)):
+    new_name = str(body.get("new_name") or "").strip()
+    engine, config = get_engine(), get_config()
+    try:
+        change = await asyncio.to_thread(zfs_datasets.rename, engine, dataset, new_name)
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    for policy in _policies_of(config, dataset):
+        keep = {k: v for k, v in policy.items() if k != "dataset"}
+        config.remove_snapshot_policy(policy["dataset"])
+        config.set_snapshot_policy(new_name + policy["dataset"][len(dataset):], keep)
+    shares = await asyncio.to_thread(
+        _follow_shares, engine, config, change["old"], change["new"], bool(body.get("update_shares")))
+    return {"dataset": new_name, **change, "shares": shares}
+
+
+@router.delete("/datasets/{dataset:path}")
+async def destroy_dataset(dataset: str, confirm: str = "", recursive: bool = False,
+                          remove_shares: bool = False, username: str = Depends(authenticate)):
+    if confirm != dataset:
+        return JSONResponse(status_code=422, content={
+            "detail": "Type the dataset's full name to confirm"})
+    engine, config = get_engine(), get_config()
+    try:
+        mountpoint, _ = await asyncio.to_thread(zfs_datasets.mountpoint_of, engine, dataset)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    found = shares_under(config, mountpoint)
+    if (found["smb"] or found["nfs"]) and not remove_shares:
+        names = [s["name"] for s in found["smb"] + found["nfs"]]
+        return JSONResponse(status_code=422, content={
+            "detail": f"Shares use it ({', '.join(names)}): tick that they go too"})
+    try:
+        await asyncio.to_thread(zfs_datasets.destroy, engine, dataset, recursive)
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    warnings, removed = [], []
+    for kind, shares in found.items():
+        for share in shares:
+            try:
+                remove_share(engine, config, kind, share)
+                removed.append(f"{kind}:{share['name']}")
+            except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+                warnings.append(f"{kind.upper()} share {share['name']} not removed: {exc}")
+    for policy in _policies_of(config, dataset):
+        config.remove_snapshot_policy(policy["dataset"])
+    return {"dataset": dataset, "removed_shares": removed, "warnings": warnings}
 
 
 @router.get("/snapshots")
@@ -214,12 +367,12 @@ def _catalogue():
     return get_engine().get_profile_section("zfs_properties")
 
 
-def _validate(catalogue: dict, name: str, value: str):
+def _validate(catalogue: dict, name: str, value: str, creating: bool = False):
     """Returns an error string, or None when the value is acceptable."""
     spec = catalogue.get(name)
     if spec is None:
         return f"Unknown property: {name}"
-    if spec.get("create_only"):
+    if spec.get("create_only") and not creating:
         return f"{name} can only be set when the dataset is created"
     if spec["type"] == "enum" and value not in spec["values"]:
         return f"{name} accepts {', '.join(spec['values'])} — not {value!r}"

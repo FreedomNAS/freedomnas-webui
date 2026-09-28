@@ -46,7 +46,7 @@ def test_datasets_are_parsed_and_short_lines_skipped(client, engine):
     assert [d["name"] for d in r.body["datasets"]] == ["tank", "tank/home"]
     assert r.body["datasets"][1] == {
         "name": "tank/home", "used": "500M", "avail": "3T", "refer": "500M",
-        "mountpoint": "/tank/home",
+        "mountpoint": "/tank/home", "protected": None,
     }
 
 
