@@ -4,6 +4,7 @@
 GET  /status   — health check (no auth, always accessible)
 GET  /info     — hostname, timezone, uptime, and what the documentation needs
                  to match this system: version, init system, firmware
+GET  /health   — each FreedomNAS module's health, and why
 POST /hostname — set hostname
 POST /timezone — set timezone
 GET  /ssh      — whether SSH is enabled
@@ -26,6 +27,7 @@ from fastapi.responses import JSONResponse, Response
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
+from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
 from freedomnas import shadow
 from api.deps import authenticate, get_config, get_engine
 
@@ -90,6 +92,35 @@ async def info(username: str = Depends(authenticate)):
         "init_system": engine.init_system,
         "firmware": _firmware(engine),
     }
+
+
+def _module_health() -> list:
+    """
+    Ask every module this edition supports how it is doing. Nothing keeps
+    the modules running between requests — no orchestrator runs on an
+    appliance — so each is started, asked and forgotten; start() only reads
+    the configuration.
+    """
+    report = []
+    for manifest, module in ModuleLoader(get_engine(), get_config()).instances():
+        entry = {"id": manifest.get("id", module.name), "name": manifest.get("name", module.name)}
+        try:
+            module.start()
+            healthy, detail = module.health()
+            entry.update(state="healthy" if healthy else "unhealthy", detail=detail)
+        except Exception as exc:
+            entry.update(state="error", detail=str(exc))
+        report.append(entry)
+    return report
+
+
+@router.get("/health")
+async def health(username: str = Depends(authenticate)):
+    try:
+        modules = await asyncio.to_thread(_module_health)
+    except ModuleLoaderException as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"modules": modules}
 
 
 @router.post("/hostname")

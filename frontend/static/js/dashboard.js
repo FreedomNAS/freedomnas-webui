@@ -29,31 +29,37 @@ async function loadUpdateStatus() {
   } catch { /* ignore */ }
 }
 
+const MODULE_PAGES = {
+  storage: '/storage/', network: '/network/', shares: '/shares/',
+  users: '/users/', updates: '/updates/',
+};
+
 async function loadModuleHealth() {
   const grid = document.getElementById('health-grid');
   if (!grid) return;
 
-  const modules = ['storage', 'network', 'shares', 'users', 'updates'];
-
   try {
-    const d = await apiJSON('GET', '/api/system/info');
-    grid.innerHTML = modules.map(name => healthCard(name, 'running')).join('');
-  } catch {
-    grid.innerHTML = modules.map(name => healthCard(name, 'unknown')).join('');
+    const d = await apiJSON('GET', '/api/system/health');
+    grid.innerHTML = (d.modules || []).map(healthCard).join('');
+  } catch (e) {
+    grid.innerHTML = `<div class="text-sm text-muted">Module health unavailable: ${esc(e.message)}</div>`;
   }
 }
 
-function healthCard(name, state) {
-  const dotClass = state === 'running' ? 'ok' : state === 'failed' ? 'err' : 'stopped';
-  const label    = state === 'running' ? 'Running' : state === 'failed' ? 'Failed' : 'Unknown';
-  return `
-    <div class="health-item">
-      <div class="health-name">${name}</div>
+function healthCard(m) {
+  const dotClass = m.state === 'healthy' ? 'ok' : m.state === 'unhealthy' ? 'err' : 'stopped';
+  const label    = m.state === 'healthy' ? 'Healthy' : m.state === 'unhealthy' ? 'Problem' : 'Error';
+  const page     = MODULE_PAGES[m.id];
+  const body = `
+      <div class="health-name">${esc(m.name)}</div>
       <div class="health-state">
         <div class="health-dot ${dotClass}"></div>
         <span class="health-state-text">${label}</span>
       </div>
-    </div>`;
+      ${m.detail ? `<div class="text-sm text-muted">${esc(m.detail)}</div>` : ''}`;
+  return page
+    ? `<a class="health-item" href="${page}">${body}</a>`
+    : `<div class="health-item">${body}</div>`;
 }
 
 function setText(id, value) {
@@ -67,4 +73,9 @@ function formatUptime(raw) {
   if (!trimmed) return '—';
   const lines = trimmed.split('\n');
   return lines[0].replace(/^up\s*/i, '').trim() || trimmed;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }

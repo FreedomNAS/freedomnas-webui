@@ -919,6 +919,8 @@ td.mono { font-family: var(--mono); font-size: 0.8em; }
   flex-direction: column;
   gap: 6px;
 }
+a.health-item { color: inherit; }
+a.health-item:hover { text-decoration: none; border-color: var(--accent); }
 
 .health-name { font-size: 0.8rem; font-weight: 600; color: var(--text-2); text-transform: capitalize; }
 .health-state { display: flex; align-items: center; gap: 6px; }

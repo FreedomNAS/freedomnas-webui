@@ -186,3 +186,33 @@ def test_a_failed_enable_is_not_recorded(client, engine, config):
 def test_ssh_wants_a_boolean(client, engine, value):
     assert client.post("/api/system/ssh", {"enabled": value}).status == 422
     assert engine.actions() == []
+
+
+@pytest.fixture
+def core_modules(monkeypatch):
+    from conftest import CORE
+    from freedomnas.module_loader import ModuleLoader
+    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dir",
+                        staticmethod(lambda: str(CORE / "modules")))
+
+
+def test_health_asks_every_module(client, engine, config, core_modules):
+    engine.outputs[("zfs", "pool_list")] = "tank\t1\t1\t1\t1\tDEGRADED\n"
+    engine.outputs[("network", "list_interfaces")] = (
+        '[{"ifname": "lo", "operstate": "UNKNOWN"}, {"ifname": "eth0", "operstate": "UP"}]')
+    r = client.get("/api/system/health")
+    assert r.status == 200
+    report = {m["id"]: (m["state"], m["detail"]) for m in r.body["modules"]}
+    assert report["storage"] == ("unhealthy", "tank is DEGRADED")
+    assert report["network"] == ("healthy", "eth0 up")
+    assert report["shares"] == ("healthy", "no share services enabled")
+    assert report["updates"][0] == "healthy"
+    assert set(report) == {"network", "shares", "storage", "updates", "users"}
+
+
+def test_a_module_that_breaks_is_reported_not_raised(client, engine, config, core_modules):
+    engine.outputs[("zfs", "pool_list")] = RuntimeError("zpool exploded")
+    r = client.get("/api/system/health")
+    assert r.status == 200
+    [storage] = [m for m in r.body["modules"] if m["id"] == "storage"]
+    assert storage == {"id": "storage", "name": "Storage", "state": "error", "detail": "zpool exploded"}
