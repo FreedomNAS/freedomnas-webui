@@ -277,7 +277,7 @@ async function attachDevice(pool) {
 }
 
 async function detachDevice(pool, device) {
-  if (!confirm(`Detach ${device} from ${pool}?\n\nNo data is lost: a cache or log device holds none.`)) return;
+  if (!await confirm('Detach Device', `Detach <span class="mono">${esc(device)}</span> from <strong>${esc(pool)}</strong>? No data is lost: a cache or log device holds none.`, 'Detach')) return;
   try {
     await apiJSON('DELETE',
       `/api/storage/pools/${pool}/devices?device=${encodeURIComponent(device)}`);
@@ -369,7 +369,7 @@ async function submitPool(e) {
   const passphrase = document.getElementById('f-pool-passphrase').value;
 
   if (!devices.length) { toast('Select at least one data device.', 'err'); return; }
-  if (!confirm(`Create ${name} on:\n\n${devices.join('\n')}\n\nEverything on those devices will be destroyed.`)) return;
+  if (!await confirm('Create Pool', `Create <strong>${esc(name)}</strong> on:<br><span class="mono">${devices.map(esc).join('<br>')}</span><br><br>Everything on those devices will be destroyed.`, 'Create and erase')) return;
 
   const btn = document.getElementById('btn-pool-submit');
   btn.disabled = true;
