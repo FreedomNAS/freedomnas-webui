@@ -5,12 +5,20 @@ These routes are exempt from the first-run guard middleware. All but
 /status need an administrator's credentials: on a system installed from an
 image those are the ones it shipped with, which the wizard replaces.
 
-GET  /status      — whether the system is initialized
+GET  /status      — whether the system is initialized, or restored and waiting
 GET  /whoami      — who the credentials belong to (sign-in before setup)
+GET  /restored    — what a configuration restored from a pool brought along
 GET  /devices     — block devices, for the data pool
 GET  /pools       — imported pools, for where the configuration lives
 POST /initialize  — administrator, hostname, timezone, optional data pool,
-                     the pool that holds .freedomnas; marks initialized
+                     the pool that holds .freedomnas; marks initialized.
+                     On a restored system: administrator and SSH only
+
+A disk image leaves a setup-pending file on its system disk. When the first
+boot finds a .freedomnas dataset on an attached pool it restores that
+configuration, which is marked initialized, but the image's shipped account
+and password are still there and the restored users have no passwords: the
+wizard stays in front of everything until the pending file is gone.
 """
 
 import logging
@@ -86,37 +94,74 @@ def _pool_names(engine) -> list:
     return [line.split("\t")[0] for line in stdout.splitlines() if line.strip()]
 
 
+def _account_exists(engine, name: str) -> bool:
+    try:
+        engine.execute("users", "get_user_info", username=name)
+    except CommandExecutionError:
+        return False
+    return True
+
+
+def _as_admin(config, name: str, sudo_group: str) -> dict:
+    """The user's entry, restored fields kept, as an administrator."""
+    entry = next((dict(u) for u in config.get_users() if u.get("username") == name), {"username": name})
+    groups = list(entry.get("groups") or [])
+    if sudo_group not in groups:
+        groups.append(sudo_group)
+    entry.update(groups=groups, admin=True)
+    return entry
+
+
+def _is_admin(user: dict, sudo_group: str) -> bool:
+    return bool(user.get("admin")) or sudo_group in (user.get("groups") or [])
+
+
 def _set_up_admin(engine, config, admin: dict, login: str) -> str:
     """
     The administrator the system keeps. A blank name keeps the account the
     wizard was opened with; its password is replaced either way. With a new
     name, the old account is removed if asked, and otherwise given the new
     password too, so the one the image shipped with works nowhere. root is
-    never an image's shipped account, and is left as it is.
+    never an image's shipped account, and is left as it is. A name a
+    restored configuration already created is taken over, not created again.
     """
     name = (admin.get("username") or "").strip() or login
     password = admin["password"]
     sudo_group = engine.get_profile_value("users", "sudo_group")
-    if name != login:
+    if name != login and not _account_exists(engine, name):
         engine.execute("users", "create", username=name, groups=sudo_group,
                        shell="/bin/bash", uid="", gid="")
     _set_password(engine, name, password)
-    config.add_user({"username": name, "groups": [sudo_group], "admin": True})
+    config.add_user(_as_admin(config, name, sudo_group))
     if name != login and login != "root":
         if admin.get("remove_default"):
             _delete_samba_user(engine, login)
             engine.execute("users", "delete", username=login)
+            config.remove_user(login)
         else:
             _set_password(engine, login, password)
-            config.add_user({"username": login, "groups": [sudo_group], "admin": True})
+            config.add_user(_as_admin(config, login, sudo_group))
     return name
+
+
+def _set_ssh(engine, config, enabled: bool) -> None:
+    service = engine.get_profile_value("system", "ssh_service")
+    if enabled:
+        engine.execute("services", "enable", service_name=service)
+        engine.execute("services", "start", service_name=service)
+    config.set("system.ssh_enabled", enabled)
+
+
+def _restoring(config) -> bool:
+    return config.is_initialized() and config.setup_pending()
 
 
 @router.get("/status")
 async def setup_status():
     config = get_config()
     return {
-        "initialized": config.is_initialized(),
+        "initialized": not config.needs_setup(),
+        "restored": _restoring(config),
         "edition": config.get_edition(),
         "detected_edition": get_engine().os_type,
     }
@@ -125,6 +170,29 @@ async def setup_status():
 @router.get("/whoami")
 async def whoami(username: str = Depends(authenticate)):
     return {"username": username}
+
+
+@router.get("/restored")
+async def setup_restored(username: str = Depends(authenticate)):
+    config = get_config()
+    if not _restoring(config):
+        return JSONResponse(status_code=409, content={"detail": "No restored configuration is waiting"})
+    engine = get_engine()
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    users = config.get_users()
+    try:
+        dataset, _ = engine.execute("zfs", "dataset_at_path",
+                                    path=str(Path(config.config_path).parent), check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        dataset = ""
+    return {
+        "hostname": config.get_hostname(),
+        "timezone": config.get("system.timezone"),
+        "state_dataset": dataset.strip() or None,
+        "admins": [u["username"] for u in users if _is_admin(u, sudo_group)],
+        "users": [u["username"] for u in users if not _is_admin(u, sudo_group)],
+        "ssh_enabled": bool(config.get("system.ssh_enabled")),
+    }
 
 
 @router.get("/devices")
@@ -149,6 +217,8 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
     engine = get_engine()
     config = get_config()
 
+    if _restoring(config):
+        return _finish_restore(engine, config, body, request, username)
     if config.is_initialized():
         return JSONResponse(status_code=409, content={"detail": "System already initialized"})
 
@@ -199,6 +269,7 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
         config.set("system.ssh_enabled", False)
         config.mark_initialized(edition=edition, initialized_by="webui")
         dataset = shadow.activate(engine, state_pool, state=Path(config.config_path).parent)
+        config.clear_setup_pending()
     except (
         CommandExecutionError,
         CommandTranslationError,
@@ -213,4 +284,42 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
         "edition": edition,
         "admin": admin_name,
         "state_dataset": dataset,
+    }
+
+
+def _finish_restore(engine, config, body: dict, request: Request, username: str):
+    """
+    The restored configuration keeps its hostname, users and shares. What the
+    image brought along does not stay: the administrator gets a new password,
+    and SSH, held off by the first boot, comes back only if asked for.
+    """
+    admin = body.get("admin") or {}
+    _, login_password = _basic_credentials(request)
+    problem = _admin_problem(admin, username, login_password)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    if not isinstance(body.get("ssh", False), bool):
+        return JSONResponse(status_code=422, content={"detail": "ssh must be true or false"})
+
+    try:
+        sudo_group = engine.get_profile_value("users", "sudo_group")
+        admin_name = _set_up_admin(engine, config, admin, username)
+        _set_ssh(engine, config, body.get("ssh", False))
+        config.clear_setup_pending()
+    except (
+        CommandExecutionError,
+        CommandTranslationError,
+        ConfigurationException,
+        OSError,
+    ) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    return {
+        "detail": "System restored",
+        "hostname": config.get_hostname(),
+        "admin": admin_name,
+        "without_password": [
+            u["username"] for u in config.get_users()
+            if not _is_admin(u, sudo_group) and u["username"] not in (admin_name, username)
+        ],
     }

@@ -35,7 +35,8 @@ def body(**changes):
 def test_status_before_setup(anonymous, fresh_config):
     r = anonymous.get("/api/setup/status")
     assert r.status == 200
-    assert r.body == {"initialized": False, "edition": None, "detected_edition": "debian"}
+    assert r.body == {"initialized": False, "restored": False, "edition": None,
+                      "detected_edition": "debian"}
 
 
 def test_the_wizard_needs_the_administrators_credentials(anonymous, engine, fresh_config):
@@ -191,3 +192,79 @@ def test_the_wizard_lists_disks_and_pools(admin, engine):
     pools = admin.get("/api/setup/pools").body
     assert pools["pools"][0]["name"] == "rpool" and pools["system_pool"] == "rpool"
     assert admin.get("/api/setup/devices").status == 200
+
+
+@pytest.fixture
+def restored(admin, engine, fresh_config, setup_pending_file):
+    """An image whose first boot restored another system's configuration."""
+    fresh_config.set_hostname("oldnas")
+    fresh_config.add_user({"username": "sarah", "uid": 1500, "groups": ["sudo"], "admin": True})
+    fresh_config.add_user({"username": "mario", "uid": 1501, "groups": ["users"]})
+    fresh_config.set("system.ssh_enabled", True)
+    fresh_config.mark_initialized("debian")
+    setup_pending_file.touch()
+    engine.outputs[("zfs", "dataset_at_path")] = "tank/.freedomnas\n"
+    return admin
+
+
+def test_a_restored_configuration_keeps_the_wizard_in_front(restored, anonymous):
+    assert anonymous.get("/api/setup/status").body["initialized"] is False
+    assert anonymous.get("/api/setup/status").body["restored"] is True
+    assert restored.get("/api/system/info").status == 503
+
+
+def test_the_wizard_shows_what_was_restored(restored):
+    r = restored.get("/api/setup/restored")
+    assert r.status == 200
+    assert r.body == {"hostname": "oldnas", "timezone": "UTC", "state_dataset": "tank/.freedomnas",
+                      "admins": ["sarah"], "users": ["mario"], "ssh_enabled": True}
+
+
+def test_nothing_is_restored_on_a_system_set_up_here(admin, fresh_config):
+    fresh_config.mark_initialized("debian")
+    assert admin.get("/api/setup/restored").status == 409
+    assert admin.post("/api/setup/initialize", body()).status == 409
+
+
+def test_finishing_a_restore_takes_over_the_restored_administrator(
+        restored, engine, fresh_config, setup_pending_file, monkeypatch):
+    monkeypatch.setitem(ACCOUNTS, "sarah", ("unknown", ["sarah", "sudo"]))
+    r = restored.post("/api/setup/initialize",
+                      {"admin": {"username": "sarah", "password": NEW_PASSWORD, "remove_default": True}})
+    assert r.status == 200
+    assert r.body == {"detail": "System restored", "hostname": "oldnas", "admin": "sarah",
+                      "without_password": ["mario"]}
+    assert engine.called("users", "create") == []
+    assert [c.stdin for c in engine.called("users", "set_password_stdin")] == [f"sarah:{NEW_PASSWORD}\n"]
+    [delete] = engine.called("users", "delete")
+    assert delete.argv[-1] == "admin"
+    assert engine.called("services", "enable") == []
+    assert engine.called("system", "hostname_set") == []
+    assert restored.activated == []
+    users = {u["username"]: u for u in fresh_config.get_users()}
+    assert sorted(users) == ["mario", "sarah"]
+    assert users["sarah"]["uid"] == 1500 and users["sarah"]["admin"] is True
+    assert fresh_config.get("system.ssh_enabled") is False
+    assert not setup_pending_file.exists()
+    assert restored.get("/api/setup/status").body["initialized"] is True
+
+
+def test_ssh_comes_back_only_when_asked(restored, engine, fresh_config):
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True})
+    assert r.status == 200 and r.body["admin"] == "admin"
+    assert [c.kwargs["service_name"] for c in engine.called("services", "enable")] == ["ssh"]
+    assert fresh_config.get("system.ssh_enabled") is True
+    assert sorted(u["username"] for u in fresh_config.get_users()) == ["admin", "mario", "sarah"]
+
+
+def test_a_restore_still_needs_a_new_password(restored, engine, setup_pending_file):
+    r = restored.post("/api/setup/initialize", {"admin": {"password": LOGIN_PASSWORD}})
+    assert r.status == 422
+    assert engine.called("users", "set_password_stdin") == []
+    assert setup_pending_file.exists()
+
+
+def test_a_fresh_setup_clears_the_pending_file(admin, setup_pending_file):
+    setup_pending_file.touch()
+    assert admin.post("/api/setup/initialize", body()).status == 200
+    assert not setup_pending_file.exists()

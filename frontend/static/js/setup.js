@@ -27,10 +27,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     return res;
   }
 
+  let restored = null;
   try {
     const res = await fetch('/api/setup/status');
     const d = await res.json();
     if (d.initialized) { location.href = '/dashboard/'; return; }
+    if (d.restored) restored = await (await api('GET', '/api/setup/restored')).json();
   } catch { /* proceed */ }
 
   document.getElementById('f-admin-name').placeholder = login;
@@ -44,6 +46,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let devicesLoaded = false;
 
   const steps = [1, 2, 3, 4, 5].reduce((acc, n) => ({ ...acc, [n]: document.getElementById(`step-${n}`) }), {});
+  if (restored) showRestore();
   showStep(1);
 
   const adminName = document.getElementById('f-admin-name');
@@ -67,7 +70,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else clearErr('f-admin-pass');
     if (pass2 !== pass) { fieldErr('f-admin-pass2', 'The passwords differ.'); ok = false; }
     else clearErr('f-admin-pass2');
-    if (ok) showStep(2);
+    if (ok) {
+      if (restored) { buildSummary(); showStep(5); } else showStep(2);
+    }
   });
 
   document.getElementById('btn-back-2').addEventListener('click', () => showStep(1));
@@ -100,13 +105,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStep(5);
   });
 
-  document.getElementById('btn-back-5').addEventListener('click', () => showStep(4));
+  document.getElementById('btn-back-5').addEventListener('click', () => showStep(restored ? 1 : 4));
   document.getElementById('btn-initialize').addEventListener('click', initialize);
   document.getElementById('btn-go-auth').addEventListener('click', () => {
     sessionStorage.removeItem('fnas_auth');
     sessionStorage.removeItem('fnas_user');
     location.href = '/auth/';
   });
+
+  function showRestore() {
+    document.getElementById('wizard-title').textContent = 'Restored Configuration';
+    document.getElementById('wizard-subtitle').textContent = 'Finish taking this system over';
+    const from = restored.state_dataset ? ` from ${restored.state_dataset}` : '';
+    document.getElementById('restore-info-text').textContent =
+      `This system restored the configuration of "${restored.hostname}"${from}: its users, shares and settings are back. ` +
+      'Restored accounts have no passwords yet.';
+    document.getElementById('restore-info').hidden = false;
+    if (restored.admins.length) {
+      document.getElementById('admin-name-hint').textContent =
+        `Restored administrators: ${restored.admins.join(', ')}. Type one to take it over, or leave empty to keep "${login}".`;
+    }
+    document.querySelectorAll('.wizard-step').forEach(el => { el.hidden = !['1', '5'].includes(el.dataset.step); });
+    document.querySelectorAll('.wizard-step-divider').forEach((el, i) => { el.hidden = i > 0; });
+    document.querySelector('.wizard-step[data-step="5"] .wizard-step-num').textContent = '2';
+    document.getElementById('restore-ssh-group').hidden = !restored.ssh_enabled;
+    document.getElementById('ssh-note').hidden = restored.ssh_enabled;
+  }
 
   function showStep(n) {
     Object.values(steps).forEach(s => s && (s.hidden = true));
@@ -200,6 +224,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function payload() {
+    if (restored) {
+      return {
+        admin: {
+          username: adminName.value.trim(),
+          password: document.getElementById('f-admin-pass').value,
+          remove_default: document.getElementById('f-remove-default').checked,
+        },
+        ssh: document.getElementById('f-restore-ssh').checked,
+      };
+    }
     const body = {
       hostname: document.getElementById('f-hostname').value.trim(),
       timezone: document.getElementById('f-timezone').value.trim() || 'UTC',
@@ -225,9 +259,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   function buildSummary() {
     const b = payload();
     const admin = b.admin.username || login;
-    const rows = [
-      ['Administrator', admin + (b.admin.username && b.admin.username !== login
-        ? (b.admin.remove_default ? ` ("${login}" removed)` : ` ("${login}" kept)`) : '')],
+    const adminRow = ['Administrator', admin + (b.admin.username && b.admin.username !== login
+      ? (b.admin.remove_default ? ` ("${login}" removed)` : ` ("${login}" kept)`) : '')];
+    const rows = restored ? [
+      adminRow,
+      ['Hostname', restored.hostname],
+      ['Configuration on', restored.state_dataset || 'this system'],
+      ['Other users', restored.users.join(', ') || 'none'],
+    ] : [
+      adminRow,
       ['Hostname', b.hostname],
       ['Timezone', b.timezone],
       ['Data pool', b.pool ? `${b.pool.name} — ${b.pool.vdev_type || 'single/stripe'} on ${b.pool.devices.join(', ')}${b.pool.encrypted ? ', encrypted' : ''}` : 'none'],
@@ -255,6 +295,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const res = await api('POST', '/api/setup/initialize', payload());
       if (res.ok) {
+        const done = await res.json();
+        if (done.without_password?.length) {
+          const note = document.getElementById('without-password');
+          note.textContent = `Set a password under Users for: ${done.without_password.join(', ')}.`;
+          note.hidden = false;
+        }
         steps[5].hidden = true;
         document.getElementById('footer-5').hidden = true;
         document.getElementById('step-done').hidden = false;

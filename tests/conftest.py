@@ -72,7 +72,7 @@ import api.main as main  # noqa: E402
 import api.routes.updates as updates_routes  # noqa: E402
 from freedomnas import keymgmt  # noqa: E402
 from freedomnas.config import ConfigurationManager  # noqa: E402
-from freedomnas.engine import FreedomNASEngine  # noqa: E402
+from freedomnas.engine import CommandExecutionError, FreedomNASEngine  # noqa: E402
 
 
 @dataclass
@@ -100,11 +100,18 @@ class RecordingEngine:
         self.real = FreedomNASEngine.for_target("debian", profile_dir=str(PROFILES))
         self.paths = paths
         self.calls = []
-        self.outputs = {("users", "list_groups"): self._groups_of}
+        self.outputs = {("users", "list_groups"): self._groups_of,
+                        ("users", "get_user_info"): self._passwd_entry}
 
     @staticmethod
     def _groups_of(username, **_):
         return " ".join(ACCOUNTS.get(username, ("", []))[1])
+
+    @staticmethod
+    def _passwd_entry(username, **_):
+        if username not in ACCOUNTS:
+            return CommandExecutionError(f"no user {username}")
+        return f"{username}:x:1000:1000::/home/{username}:/bin/bash"
 
     def __getattr__(self, name):
         return getattr(self.real, name)
@@ -181,6 +188,14 @@ def fresh_config(monkeypatch, tmp_path):
     manager = ConfigurationManager(str(tmp_path / "state" / "config.yaml"))
     monkeypatch.setattr(deps, "_config", manager)
     return manager
+
+
+@pytest.fixture(autouse=True)
+def setup_pending_file(monkeypatch, tmp_path):
+    """Where an image's setup-pending file would be; absent unless a test makes it."""
+    path = tmp_path / "setup-pending"
+    monkeypatch.setattr(ConfigurationManager, "SETUP_PENDING_PATH", path)
+    return path
 
 
 @pytest.fixture(autouse=True)

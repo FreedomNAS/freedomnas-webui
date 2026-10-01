@@ -14,8 +14,8 @@
     <div class="wizard-header">
       <img src="/static/img/logo_cut.png" alt="FreedomNAS" width="40" height="40">
       <div class="wizard-header-text">
-        <h1>First-Time Setup</h1>
-        <p>Make this FreedomNAS yours</p>
+        <h1 id="wizard-title">First-Time Setup</h1>
+        <p id="wizard-subtitle">Make this FreedomNAS yours</p>
       </div>
     </div>
 
@@ -32,6 +32,9 @@
     </div>
 
     <div id="step-1" class="wizard-body">
+      <div class="alert alert-info" id="restore-info" hidden>
+        <span id="restore-info-text"></span>
+      </div>
       <div class="alert alert-warn">
         <span>This system still has the password it was shipped with. Choose your own before anything else.</span>
       </div>
@@ -145,7 +148,13 @@
           <tbody id="summary"></tbody>
         </table>
       </div>
-      <p class="text-muted text-sm mt-2">SSH stays off. It can be turned on under System at the Advanced level.</p>
+      <div class="form-group mt-2" id="restore-ssh-group" hidden>
+        <label class="checkbox-group">
+          <input id="f-restore-ssh" type="checkbox">
+          <span>Turn SSH back on, as the restored configuration had it</span>
+        </label>
+      </div>
+      <p class="text-muted text-sm mt-2" id="ssh-note">SSH stays off. It can be turned on under System at the Advanced level.</p>
       <p id="init-error" class="text-err text-sm" hidden></p>
     </div>
     <div class="wizard-footer" id="footer-5" hidden>
@@ -157,6 +166,7 @@
       <div style="font-size:2.5rem;margin-bottom:12px">✓</div>
       <h2 style="color:var(--ok)">FreedomNAS is ready</h2>
       <p class="text-muted mt-2" style="font-size:0.875rem">Sign in again with your new password.</p>
+      <p class="text-muted mt-2" style="font-size:0.875rem" id="without-password" hidden></p>
       <button id="btn-go-auth" class="btn btn-primary mt-6">Sign In</button>
     </div>
 

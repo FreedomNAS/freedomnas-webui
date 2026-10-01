@@ -69,7 +69,7 @@ async def first_run_guard(request: Request, call_next):
     if not path.startswith("/api/"):
         return await call_next(request)
     exempt = path in EXEMPT_EXACT or any(path.startswith(p) for p in EXEMPT_PREFIXES)
-    if not exempt and not get_config().is_initialized():
+    if not exempt and get_config().needs_setup():
         return JSONResponse(
             status_code=503,
             content={"detail": "System not initialized — complete /setup/ first."},
@@ -181,7 +181,7 @@ else:
 
 @app.get("/")
 async def root():
-    if not get_config().is_initialized():
+    if get_config().needs_setup():
         return RedirectResponse("/setup/")
     return RedirectResponse("/dashboard/")
 
