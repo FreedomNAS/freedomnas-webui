@@ -844,6 +844,11 @@ async function openCreateDataset() {
       <input class="input" id="ds-name" type="text" placeholder="media" autocomplete="off">
       <span class="form-hint">A letter or digit, then letters, digits, <span class="mono">_ . : -</span></span>
     </div>
+    <div class="form-group">
+      <label class="form-label" for="ds-owner">Owner</label>
+      <select class="select" id="ds-owner"></select>
+      <span class="form-hint">Its directory becomes this account's alone, and so do the shares made of it.</span>
+    </div>
     ${mountpointChoice('')}
     ${extras}`, async () => {
       const properties = {};
@@ -853,12 +858,15 @@ async function openCreateDataset() {
         name: document.getElementById('ds-name').value.trim(),
         mountpoint_mode: chosenMountpoint().mode,
         mountpoint: chosenMountpoint().mountpoint,
+        owner: document.getElementById('ds-owner').value,
         properties,
       });
-      toast(`Dataset ${res.dataset} created.`, 'ok');
+      toast(res.owner ? `Dataset ${res.dataset} created for ${res.owner}.` : `Dataset ${res.dataset} created.`, 'ok');
+      if (res.warning) toast(res.warning, 'warn', 8000);
       closeModal('modal-dataset');
       loadDatasets();
     });
+  fillOwnerSelect(document.getElementById('ds-owner'));
   const hint = () => {
     const opt = document.getElementById('ds-parent').selectedOptions[0];
     const mp = opt?.dataset.mp || '';

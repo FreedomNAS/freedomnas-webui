@@ -29,7 +29,7 @@ class Pool:
 
     def wire(self, engine):
         o = engine.outputs
-        o[("zfs", "dataset_at_path")] = lambda path, **_: "rpool/ROOT" if path == "/" else (path if path in self.explicit else "")
+        o[("zfs", "dataset_at_path")] = self._at_path
         o[("zfs", "dataset_get_property")] = lambda dataset, **_: "\t".join(self.effective(dataset))
         o[("zfs", "dataset_list")] = lambda **_: "\n".join(
             f"{n}\t1024\t2048\t512\t{self.effective(n)[0]}" for n in self.explicit)
@@ -39,6 +39,18 @@ class Pool:
         o[("zfs", "dataset_inherit")] = lambda dataset, **_: self.explicit.__setitem__(dataset, None) or ""
         o[("zfs", "dataset_rename")] = self._rename
         return engine
+
+    def _at_path(self, path, **_):
+        """A dataset's name answers itself; a directory, the dataset it lies in."""
+        if path in self.explicit:
+            return path
+        found = ""
+        for name in self.explicit:
+            mp = self.effective(name)[0]
+            if mp.startswith("/") and (path == mp or path.startswith(mp.rstrip("/") + "/")):
+                if not found or len(mp) > len(self.effective(found)[0]):
+                    found = name
+        return found
 
     def _create(self, dataset, options, **_):
         opts = dict(w.split("=", 1) for w in options.split() if "=" in w)
@@ -71,10 +83,35 @@ def test_a_dataset_is_created_with_its_options(client, engine, pool):
     r = client.post("/api/storage/datasets", {
         "parent": "tank", "name": "films", "mountpoint_mode": "path", "mountpoint": "/srv/films",
         "properties": {"compression": "zstd", "casesensitivity": "insensitive", "quota": ""}})
-    assert r.status == 200 and r.body == {"dataset": "tank/films"}
+    assert r.status == 200 and r.body == {"dataset": "tank/films", "owner": "admin"}
     [create] = engine.called("zfs", "dataset_create_with")
     assert create.argv == ["zfs", "create", "-o", "mountpoint=/srv/films", "-o", "compression=zstd",
                            "-o", "casesensitivity=insensitive", "tank/films"]
+
+
+def test_a_new_dataset_belongs_to_whoever_creates_it(client, engine, pool):
+    r = client.post("/api/storage/datasets", {"parent": "tank", "name": "films"})
+    assert r.body == {"dataset": "tank/films", "owner": "admin"}
+    assert [c.argv for c in engine.called("directories", "owner_set")] == [["chown", "admin", "/tank/films"]]
+    assert [c.argv for c in engine.called("directories", "mode_set")] == [["chmod", "0700", "/tank/films"]]
+
+
+def test_a_dataset_can_be_made_for_another_account(client, engine, pool):
+    r = client.post("/api/storage/datasets", {"parent": "tank", "name": "mario", "owner": "mario"})
+    assert r.body["owner"] == "mario"
+    assert engine.called("directories", "owner_set")[0].argv == ["chown", "mario", "/tank/mario"]
+
+
+def test_a_dataset_for_nobody_is_not_created(client, engine, pool):
+    r = client.post("/api/storage/datasets", {"parent": "tank", "name": "x", "owner": "ghost"})
+    assert r.status == 422 and "no account named ghost" in r.body["detail"]
+    assert engine.called("zfs", "dataset_create_with") == []
+
+
+def test_an_unmounted_dataset_has_no_directory_to_give(client, engine, pool):
+    r = client.post("/api/storage/datasets", {"parent": "tank", "name": "x", "mountpoint_mode": "none"})
+    assert r.status == 200 and r.body == {"dataset": "tank/x", "owner": None}
+    assert engine.called("directories", "owner_set") == []
 
 
 @pytest.mark.parametrize("body, detail", [

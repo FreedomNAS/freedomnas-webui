@@ -43,24 +43,26 @@ def test_smb_without_any_smb_conf_is_a_409(client, engine):
 def test_an_smb_share_is_created_reloaded_and_recorded(client, engine, config, smb_ready):
     r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto"})
     assert r.status == 200
-    assert engine.actions() == [("samba", "create_share"), ("samba", "reload_config")]
+    assert engine.actions() == [("zfs", "dataset_at_path"),
+                                ("samba", "create_share"), ("samba", "reload_config")]
     [create] = engine.called("samba", "create_share")
-    assert create.argv == ["net", "usershare", "add", "foto", "/tank/foto", "foto",
-                           "Everyone:R,admin:F"]
+    assert create.argv == ["net", "usershare", "add", "foto", "/tank/foto", "foto", "Unix User\\admin:F"]
     saved = config.get_smb_share("foto")
     assert saved["path"] == "/tank/foto"
     assert saved["valid_users"] == ["admin"]
+    assert saved["owner"] == "admin"
     assert saved["guest_ok"] is False
-    assert saved["acl"] == "Everyone:R,admin:F"
+    assert saved["acl"] == "Unix User\\admin:F"
     assert saved["comment"] == "foto"
+    assert "left as they are" in r.body["warning"]
 
 
 def test_a_read_only_share_gives_nobody_write_access(client, engine, config, smb_ready):
     r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto", "read_only": True})
     assert r.status == 200
     [create] = engine.called("samba", "create_share")
-    assert create.argv[-1] == "Everyone:R"
-    assert config.get_smb_share("foto")["acl"] == "Everyone:R"
+    assert create.argv[-1] == "Unix User\\admin:R"
+    assert config.get_smb_share("foto")["acl"] == "Unix User\\admin:R"
 
 
 def test_a_comment_with_spaces_stays_the_comment(client, engine, smb_ready):
@@ -73,7 +75,72 @@ def test_a_comment_with_spaces_stays_the_comment(client, engine, smb_ready):
 def test_an_empty_comment_does_not_shift_the_acl(client, engine, smb_ready):
     client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto", "comment": ""})
     [create] = engine.called("samba", "create_share")
-    assert create.argv[-2:] == ["", "Everyone:R,admin:F"]
+    assert create.argv[-2:] == ["", "Unix User\\admin:F"]
+
+
+@pytest.fixture
+def dataset_dir(engine):
+    """/tank/foto is where tank/foto mounts, and root still owns it."""
+    owner = {"name": "root"}
+    engine.outputs[("zfs", "dataset_at_path")] = lambda path, **_: "rpool/ROOT" if path == "/" else "tank/foto"
+    engine.outputs[("zfs", "dataset_get_property")] = lambda dataset, **_: (
+        "/\tlocal" if dataset == "rpool/ROOT" else "/tank/foto\tdefault")
+    engine.outputs[("directories", "owner_get")] = lambda **_: owner["name"]
+    return owner
+
+
+def test_a_share_of_a_new_dataset_goes_to_whoever_shares_it(client, engine, config, smb_ready, dataset_dir):
+    r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto"})
+    assert r.status == 200 and r.body["owner"] == "admin" and "warning" not in r.body
+    assert engine.called("directories", "owner_set")[0].argv == ["chown", "admin", "/tank/foto"]
+    assert engine.called("directories", "mode_set")[0].argv == ["chmod", "0700", "/tank/foto"]
+
+
+def test_a_share_keeps_the_owner_its_dataset_was_given(client, engine, config, smb_ready, dataset_dir):
+    dataset_dir["name"] = "mario"
+    r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto"})
+    assert r.body["owner"] == "mario"
+    assert engine.called("samba", "create_share")[0].argv[-1] == "Unix User\\mario:F"
+    assert config.get_smb_share("foto")["valid_users"] == ["mario"]
+    assert engine.called("directories", "owner_set")[0].argv == ["chown", "mario", "/tank/foto"]
+
+
+def test_a_share_can_be_made_for_another_account(client, engine, config, smb_ready, dataset_dir):
+    r = client.post("/api/shares/nfs", {"name": "foto", "path": "/tank/foto",
+                                        "allowed_hosts": "192.168.1.0/24", "owner": "mario"})
+    assert r.status == 200 and r.body["owner"] == "mario"
+    assert engine.called("directories", "owner_set")[0].argv == ["chown", "mario", "/tank/foto"]
+    assert config.get_nfs_shares()[0]["owner"] == "mario"
+
+
+def test_an_nfs_share_of_a_given_dataset_maps_its_clients_onto_the_owner(
+        client, engine, config, dataset_dir):
+    r = client.post("/api/shares/nfs", {"name": "foto", "path": "/tank/foto",
+                                        "allowed_hosts": "192.168.1.20", "owner": "mario"})
+    assert r.status == 200
+    [add] = engine.called("nfs", "export_add")
+    assert add.kwargs["options"] == "rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000"
+    saved = config.get_nfs_shares()[0]
+    assert saved["options"] == "rw,sync,no_subtree_check" and saved["map_to_owner"] is True
+
+
+def test_an_nfs_share_of_another_directory_maps_nobody(client, engine, config):
+    r = client.post("/api/shares/nfs", {"name": "x", "path": "/srv/x", "allowed_hosts": "*"})
+    assert r.status == 200 and "warning" in r.body
+    assert engine.called("nfs", "export_add")[0].kwargs["options"] == "rw,sync,no_subtree_check"
+    assert config.get_nfs_shares()[0]["map_to_owner"] is False
+
+
+def test_a_share_for_nobody_is_refused(client, engine, config, smb_ready, dataset_dir):
+    r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto", "owner": "ghost"})
+    assert r.status == 422 and "no account named ghost" in r.body["detail"]
+    assert engine.called("samba", "create_share") == []
+
+
+def test_a_directory_inside_a_dataset_keeps_its_permissions(client, engine, config, smb_ready, dataset_dir):
+    r = client.post("/api/shares/smb", {"name": "estate", "path": "/tank/foto/estate"})
+    assert r.status == 200 and "left as they are" in r.body["warning"]
+    assert engine.called("directories", "owner_set") == []
 
 
 def test_an_smb_share_is_deleted(client, engine, config):
@@ -106,7 +173,8 @@ def test_an_nfs_share_is_exported_through_the_profile(client, engine, config, tm
     r = client.post("/api/shares/nfs", {"name": "backup", "path": "/tank/backup",
                                         "allowed_hosts": "192.168.1.0/24"})
     assert r.status == 200
-    assert engine.actions() == [("nfs", "export_add"), ("nfs", "exportfs_reload")]
+    assert engine.actions() == [("zfs", "dataset_at_path"),
+                                ("nfs", "export_add"), ("nfs", "exportfs_reload")]
     [add] = engine.called("nfs", "export_add")
     apply_to(exports, add)
     apply_to(exports, add)

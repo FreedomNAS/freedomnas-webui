@@ -17,9 +17,35 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
+from freedomnas import datasets as zfs_datasets
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Owner
+#
+# A share is as writable as its directory. When that directory is where a
+# dataset of a data pool mounts, it goes to the share's owner (mode 700, see
+# freedomnas.datasets.give_to). With no owner asked for, a directory that
+# already belongs to someone keeps them — a share made by the administrator
+# for a dataset given to another account must not take it back — and one
+# still root's goes to whoever creates the share.
+# ---------------------------------------------------------------------------
+
+def _share_owner(engine, path: str, requested: str, username: str):
+    """(owner, warning) for a new share of `path`."""
+    if not zfs_datasets.dataset_mounted_at(engine, path):
+        return requested or username, (
+            f"{path} is not where a dataset of a data pool is mounted, so its "
+            "permissions were left as they are")
+    owner = requested
+    if not owner:
+        current = zfs_datasets.owner_of(engine, path)
+        owner = current if current and current != "root" else username
+    zfs_datasets.give_to(engine, path, owner)
+    return owner, None
 
 
 # ---------------------------------------------------------------------------
@@ -64,9 +90,19 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
         )
 
     comment = body.get("comment", share_name)
-    valid_users = body.get("valid_users", [username])
     read_only = bool(body.get("read_only", False))
-    acl = body.get("acl") or ("Everyone:R" if read_only else f"Everyone:R,{username}:F")
+    try:
+        owner, warning = _share_owner(
+            engine, path, str(body.get("owner") or "").strip(), username)
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    valid_users = body.get("valid_users", [owner])
+    # A bare name in a usershare ACL is not looked up as the account, and a
+    # NetBIOS-qualified one breaks when the hostname changes: Samba's own
+    # "Unix User" domain always names the account itself.
+    acl = body.get("acl") or f"Unix User\\{owner}:{'R' if read_only else 'F'}"
 
     try:
         add_smb_share(engine, config, {
@@ -76,10 +112,14 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
             "acl": acl,
             "read_only": read_only,
             "valid_users": valid_users,
+            "owner": owner,
         })
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    return {"name": share_name, "path": path}
+    result = {"name": share_name, "path": path, "owner": owner}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def add_smb_share(engine, config, share: dict) -> None:
@@ -149,6 +189,13 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
 
     engine = get_engine()
     config = get_config()
+    try:
+        owner, warning = _share_owner(
+            engine, path, str(body.get("owner") or "").strip(), username)
+    except zfs_datasets.DatasetProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     try:
         add_nfs_share(engine, config, {
@@ -156,10 +203,16 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
             "path": path,
             "allowed_hosts": allowed_hosts,
             "options": options,
+            "owner": owner,
+            # The directory is the owner's alone only when it was given to them.
+            "map_to_owner": warning is None,
         })
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    return {"name": name, "path": path}
+    result = {"name": name, "path": path, "owner": owner}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def nfs_share_problem(share: dict):
@@ -172,7 +225,8 @@ def nfs_share_problem(share: dict):
 
 def add_nfs_share(engine, config, share: dict) -> None:
     engine.execute("nfs", "export_add", path=share["path"],
-                   clients=share["allowed_hosts"], options=share["options"])
+                   clients=share["allowed_hosts"],
+                   options=zfs_datasets.nfs_export_options(engine, share))
     engine.execute("nfs", "exportfs_reload")
     config.add_nfs_share(share)
 

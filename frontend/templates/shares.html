@@ -46,6 +46,11 @@
           <input id="f-share-path" class="input" type="text" required
                  placeholder="/mnt/datapool/media" autocomplete="off" spellcheck="false">
         </div>
+        <div class="form-group">
+          <label class="form-label" for="f-share-owner">Owner</label>
+          <select id="f-share-owner" class="select"></select>
+          <span class="form-hint">Only this account can use the share. When the path is a dataset's own directory, the directory becomes theirs alone.</span>
+        </div>
         <!-- SMB only -->
         <div class="smb-only">
           <label class="checkbox-group">

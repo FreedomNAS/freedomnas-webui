@@ -67,6 +67,21 @@ async function apiJSON(method, path, body = null) {
   return data;
 }
 
+// ── Owners ───────────────────────────────────────────────────────────────────
+// The accounts a dataset or a share can be given to, into a <select>. With
+// `automatic`, a first empty choice leaves the decision to the server.
+async function fillOwnerSelect(select, automatic = null) {
+  select.replaceChildren();
+  if (automatic) select.add(new Option(automatic, ''));
+  let names = [];
+  try { names = (await apiJSON('GET', '/api/users/')).users.map(u => u.username); }
+  catch { /* the signed-in account is listed below all the same */ }
+  const me = Auth.getUser();
+  if (!names.includes(me)) names.unshift(me);
+  names.forEach(n => select.add(new Option(n, n)));
+  select.value = automatic ? '' : me;
+}
+
 // ── Toast ────────────────────────────────────────────────────────────────────
 const Icons = {
   ok:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`,

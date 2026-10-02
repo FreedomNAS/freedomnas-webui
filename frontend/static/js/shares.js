@@ -16,6 +16,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelectorAll('.nfs-only').forEach(el => el.hidden = type !== 'nfs');
     document.getElementById('modal-title-type').textContent = type.toUpperCase();
     document.getElementById('form-share').reset();
+    fillOwnerSelect(document.getElementById('f-share-owner'),
+      'Automatic — whoever the dataset was given to, or you');
     openModal('modal-share');
   });
 
@@ -113,10 +115,12 @@ async function createSmb() {
   const name  = document.getElementById('f-share-name').value.trim();
   const path  = document.getElementById('f-share-path').value.trim();
   const ro    = document.getElementById('f-share-ro').checked;
+  const owner = document.getElementById('f-share-owner').value;
   if (!name || !path) { toast('Name and path are required.', 'warn'); throw new Error('validation'); }
   try {
-    await apiJSON('POST', '/api/shares/smb', { name, path, read_only: ro });
-    toast(`SMB share "${name}" created.`, 'ok');
+    const res = await apiJSON('POST', '/api/shares/smb', { name, path, read_only: ro, owner });
+    toast(`SMB share "${name}" created for ${res.owner}.`, 'ok');
+    if (res.warning) toast(res.warning, 'warn', 8000);
   } catch (e) {
     toast(`Error: ${e.message}`, 'err');
     throw e;
@@ -128,10 +132,12 @@ async function createNfs() {
   const path   = document.getElementById('f-share-path').value.trim();
   const hosts  = document.getElementById('f-nfs-hosts').value.trim();
   const opts   = document.getElementById('f-nfs-options').value.trim() || 'rw,sync,no_subtree_check';
+  const owner  = document.getElementById('f-share-owner').value;
   if (!name || !path || !hosts) { toast('Name, path, and allowed hosts are required.', 'warn'); throw new Error('validation'); }
   try {
-    await apiJSON('POST', '/api/shares/nfs', { name, path, allowed_hosts: hosts, options: opts });
-    toast(`NFS share "${name}" created.`, 'ok');
+    const res = await apiJSON('POST', '/api/shares/nfs', { name, path, allowed_hosts: hosts, options: opts, owner });
+    toast(`NFS share "${name}" created for ${res.owner}.`, 'ok');
+    if (res.warning) toast(res.warning, 'warn', 8000);
   } catch (e) {
     toast(`Error: ${e.message}`, 'err');
     throw e;

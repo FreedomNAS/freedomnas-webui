@@ -153,7 +153,12 @@ async def create_dataset(body: dict, username: str = Depends(authenticate)):
     errors = [e for e in (_validate(catalogue, k, v, creating=True) for k, v in wanted.items()) if e]
     if errors:
         return JSONResponse(status_code=422, content={"detail": "; ".join(errors)})
+    owner = str(body.get("owner") or "").strip() or username
     engine = get_engine()
+    try:
+        engine.execute("users", "get_user_info", username=owner)
+    except CommandExecutionError:
+        return JSONResponse(status_code=422, content={"detail": f"There is no account named {owner}"})
     try:
         created = await asyncio.to_thread(
             zfs_datasets.create, engine, parent, name, mode, mountpoint, wanted)
@@ -161,7 +166,17 @@ async def create_dataset(body: dict, username: str = Depends(authenticate)):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    return {"dataset": created}
+    # The dataset exists from here on: a directory that could not be handed
+    # over is reported, not a reason to call the creation failed.
+    result = {"dataset": created, "owner": None}
+    try:
+        where, _ = await asyncio.to_thread(zfs_datasets.mountpoint_of, engine, created)
+        if where.startswith("/"):
+            await asyncio.to_thread(zfs_datasets.give_to, engine, where, owner)
+            result["owner"] = owner
+    except (zfs_datasets.DatasetProblem, CommandExecutionError, CommandTranslationError) as exc:
+        result["warning"] = f"{created} was created, but its directory was not given to {owner}: {exc}"
+    return result
 
 
 def _policies_of(config, name: str):
