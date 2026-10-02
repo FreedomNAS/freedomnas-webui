@@ -268,6 +268,9 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
             return created
 
     try:
+        # The state moves to its pool first: if that fails, nothing has been
+        # marked initialized yet and the wizard can simply be run again.
+        dataset = shadow.activate(engine, state_pool, state=Path(config.config_path).parent)
         engine.execute("system", "hostname_set", hostname=hostname)
         config.set_hostname(hostname)
         engine.execute("system", "timezone_set", timezone=timezone)
@@ -276,7 +279,6 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
         admin_name = _set_up_admin(engine, config, admin, username)
         config.set("system.ssh_enabled", False)
         config.mark_initialized(edition=edition, initialized_by="webui")
-        dataset = shadow.activate(engine, state_pool, state=Path(config.config_path).parent)
         config.clear_setup_pending()
     except (
         CommandExecutionError,

@@ -170,7 +170,23 @@ def test_a_failing_step_leaves_the_system_uninitialized(admin, engine, fresh_con
     assert r.status == 500
     assert "timedatectl failed" in r.body["detail"]
     assert not fresh_config.is_initialized()
-    assert admin.activated == []
+    # The state already moved — harmless: activating the same pool again on
+    # the next attempt does nothing.
+    assert admin.activated == [("rpool", fresh_config.config_path.parent)]
+
+
+def test_a_state_that_cannot_move_leaves_the_system_untouched(admin, engine, fresh_config,
+                                                              monkeypatch):
+    def activate(engine_, pool, state=None):
+        raise CommandExecutionError("cannot mount tank/.freedomnas")
+
+    monkeypatch.setattr(setup_routes.shadow, "activate", activate)
+    r = admin.post("/api/setup/initialize", body())
+    assert r.status == 500
+    assert "cannot mount" in r.body["detail"]
+    assert not fresh_config.is_initialized()
+    assert not fresh_config.setup_pending()
+    assert engine.actions() == [("zfs", "pool_list")]
 
 
 @pytest.mark.parametrize("timezone", ["../../../etc/shadow", "-u", "Europe/Rome x", "Mars/Base"])
