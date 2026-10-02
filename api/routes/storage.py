@@ -578,11 +578,8 @@ async def list_devices(username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-    if engine.get_os_info().get("os_family") == "bsd":
-        # `sysctl -n kern.disks` gives names and nothing else.
-        return {"devices": [{"name": f"/dev/{n}", "type": "disk"}
-                            for n in stdout.split()]}
-
+    # Every edition answers in `lsblk -P` form: FreeBSD's profile builds the
+    # same fields from diskinfo, gpart, fstyp, zpool and mount.
     devices = []
     parents = {}
     for line in stdout.splitlines():
@@ -923,7 +920,9 @@ def _do_import(engine, config, request: dict, body: dict, admin_user: str) -> di
             "name": share["name"],
             "path": share["path"],
             "allowed_hosts": share.get("allowed_hosts", ""),
-            "options": share.get("options") or "rw,sync,no_subtree_check",
+            "options": share.get("options") or "",
+            "owner": share.get("owner"),
+            "map_to_owner": bool(share.get("map_to_owner")),
         }
         problem = nfs_share_problem(entry)
         if problem:

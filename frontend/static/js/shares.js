@@ -131,7 +131,7 @@ async function createNfs() {
   const name   = document.getElementById('f-share-name').value.trim();
   const path   = document.getElementById('f-share-path').value.trim();
   const hosts  = document.getElementById('f-nfs-hosts').value.trim();
-  const opts   = document.getElementById('f-nfs-options').value.trim() || 'rw,sync,no_subtree_check';
+  const opts   = document.getElementById('f-nfs-options').value.trim();
   const owner  = document.getElementById('f-share-owner').value;
   if (!name || !path || !hosts) { toast('Name, path, and allowed hosts are required.', 'warn'); throw new Error('validation'); }
   try {

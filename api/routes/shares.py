@@ -181,14 +181,20 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
             content={"detail": "name, path and allowed_hosts are required"},
         )
 
-    options = body.get("options", "rw,sync,no_subtree_check")
-    for field, value in (("path", path), ("allowed_hosts", allowed_hosts), ("options", options)):
+    engine = get_engine()
+    config = get_config()
+    # The edition's own default: Linux and FreeBSD exports share no option
+    # names, and FreeBSD needs none at all.
+    options = str(body.get("options") or "").strip()
+    fields = [("path", path), ("allowed_hosts", allowed_hosts)]
+    if options:
+        fields.append(("options", options))
+    for field, value in fields:
         problem = _export_field_problem(field, value)
         if problem:
             return JSONResponse(status_code=422, content={"detail": problem})
-
-    engine = get_engine()
-    config = get_config()
+    if not options:
+        options = engine.get_profile_value("nfs", "default_options")
     try:
         owner, warning = _share_owner(
             engine, path, str(body.get("owner") or "").strip(), username)
@@ -217,6 +223,8 @@ async def create_nfs(body: dict, username: str = Depends(authenticate)):
 
 def nfs_share_problem(share: dict):
     for field in ("path", "allowed_hosts", "options"):
+        if field == "options" and not share.get("options"):
+            continue
         problem = _export_field_problem(field, str(share.get(field, "")))
         if problem:
             return problem

@@ -75,6 +75,14 @@ def _prepare_usershares(engine) -> None:
                 "   usershare allow guests = no\n"
             )
     engine.execute("samba", "usershare_prepare", path=usershare_path)
+    # Samba reads [global] when it starts, and FreeBSD's samba package ships
+    # no smb4.conf at all, so it did not start at boot: start it now with
+    # the usershare settings. Without Samba installed there is nothing to do.
+    try:
+        engine.execute("services", "restart",
+                       service_name=engine.get_profile_value("samba", "smb_service"), check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        pass
 
 
 def _admin_problem(admin: dict, login: str, login_password: str) -> Optional[str]:
