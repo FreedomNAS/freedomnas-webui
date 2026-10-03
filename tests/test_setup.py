@@ -277,6 +277,18 @@ def test_ssh_comes_back_only_when_asked(restored, engine, fresh_config):
     assert sorted(u["username"] for u in fresh_config.get_users()) == ["admin", "mario", "sarah"]
 
 
+def test_a_failed_restore_keeps_the_password_it_was_opened_with(
+        restored, engine, fresh_config, setup_pending_file):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("services", "start")] = CommandExecutionError(
+        "warning: ssh: unable to open supervise/control: file does not exist")
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True})
+    assert r.status == 500
+    assert engine.called("users", "set_password_stdin") == []
+    assert setup_pending_file.exists()
+    assert restored.get("/api/setup/status").body["restored"] is True
+
+
 def test_a_restore_still_needs_a_new_password(restored, engine, setup_pending_file):
     r = restored.post("/api/setup/initialize", {"admin": {"password": LOGIN_PASSWORD}})
     assert r.status == 422

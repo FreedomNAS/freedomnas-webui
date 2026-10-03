@@ -281,10 +281,10 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
 
     try:
         sudo_group = engine.get_profile_value("users", "sudo_group")
-        admin_name = _set_up_admin(engine, config, admin, username)
         _set_ssh(engine, config, body.get("ssh", False))
         # The configuration may come from another edition's install.
         config.set("system.edition", engine.os_type)
+        admin_name = _set_up_admin(engine, config, admin, username)
         config.clear_setup_pending()
     except (
         CommandExecutionError,
