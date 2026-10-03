@@ -31,12 +31,13 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from freedomnas import shadow
+from freedomnas import shadow, usershares
 from api.deps import _basic_credentials, authenticate, get_config, get_engine
 from api.routes import storage
 from api.routes.system import timezone_problem
 from api.routes.users import (
     MIN_PASSWORD_LENGTH,
+    account_ids,
     _credentials_problem,
     _delete_samba_user,
     _set_password,
@@ -48,41 +49,6 @@ router = APIRouter()
 
 _USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-
-
-def _prepare_usershares(engine) -> None:
-    """
-    Make Samba usershares possible, so shares can be created later (spec §7.6).
-
-    The [global] usershare settings are appended only when smb.conf lacks
-    them: an installation that wrote a complete smb.conf already has them,
-    and a second copy would be noise. The directory is created through the
-    profile, since where it lives and how it is created is the edition's.
-    """
-    smb_conf = engine.get_profile_value("samba", "config_file")
-    usershare_path = engine.get_profile_value("samba", "usershare_path")
-    try:
-        with open(smb_conf) as f:
-            current = f.read()
-    except FileNotFoundError:
-        current = ""
-    if "usershare path" not in current:
-        with open(smb_conf, "a") as f:
-            f.write(
-                "\n[global]\n"
-                f"   usershare path = {usershare_path}\n"
-                "   usershare max shares = 100\n"
-                "   usershare allow guests = no\n"
-            )
-    engine.execute("samba", "usershare_prepare", path=usershare_path)
-    # Samba reads [global] when it starts, and FreeBSD's samba package ships
-    # no smb4.conf at all, so it did not start at boot: start it now with
-    # the usershare settings. Without Samba installed there is nothing to do.
-    try:
-        engine.execute("services", "restart",
-                       service_name=engine.get_profile_value("samba", "smb_service"), check=False)
-    except (CommandExecutionError, CommandTranslationError):
-        pass
 
 
 def _admin_problem(admin: dict, login: str, login_password: str) -> Optional[str]:
@@ -117,6 +83,8 @@ def _as_admin(config, name: str, sudo_group: str) -> dict:
     if sudo_group not in groups:
         groups.append(sudo_group)
     entry.update(groups=groups, admin=True)
+    if "uid" not in entry:
+        entry.update(account_ids(get_engine(), name))
     return entry
 
 
@@ -275,7 +243,7 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
         config.set_hostname(hostname)
         engine.execute("system", "timezone_set", timezone=timezone)
         config.set("system.timezone", timezone)
-        _prepare_usershares(engine)
+        usershares.prepare(engine)
         admin_name = _set_up_admin(engine, config, admin, username)
         config.set("system.ssh_enabled", False)
         config.mark_initialized(edition=edition, initialized_by="webui")
@@ -315,6 +283,8 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         sudo_group = engine.get_profile_value("users", "sudo_group")
         admin_name = _set_up_admin(engine, config, admin, username)
         _set_ssh(engine, config, body.get("ssh", False))
+        # The configuration may come from another edition's install.
+        config.set("system.edition", engine.os_type)
         config.clear_setup_pending()
     except (
         CommandExecutionError,

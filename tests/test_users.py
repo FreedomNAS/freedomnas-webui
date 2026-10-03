@@ -70,6 +70,7 @@ def test_creating_a_user_creates_it_then_sets_its_password(client, engine, confi
         ("users", "set_password_stdin"),
         ("samba", "check_installed"),
         ("samba", "set_user_password"),
+        ("users", "get_user_info"),
     ]
     [create] = engine.called("users", "create")
     assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "sudo,users", "carla"]

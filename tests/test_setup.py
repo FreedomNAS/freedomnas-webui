@@ -65,6 +65,7 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
         ("users", "set_password_stdin"),
         ("samba", "check_installed"),
         ("samba", "set_user_password"),
+        ("users", "get_user_info"),
     ]
     [password] = engine.called("users", "set_password_stdin")
     assert password.stdin == f"admin:{NEW_PASSWORD}\n"
@@ -73,6 +74,7 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
     assert fresh_config.get_hostname() == "nas"
     assert fresh_config.get("system.ssh_enabled") is False
     assert [u["username"] for u in fresh_config.get_users()] == ["admin"]
+    assert fresh_config.get_users()[0]["uid"] == 1000
     assert admin.activated == [("rpool", fresh_config.config_path.parent)]
 
 
@@ -218,7 +220,7 @@ def restored(admin, engine, fresh_config, setup_pending_file):
     fresh_config.add_user({"username": "sarah", "uid": 1500, "groups": ["sudo"], "admin": True})
     fresh_config.add_user({"username": "mario", "uid": 1501, "groups": ["users"]})
     fresh_config.set("system.ssh_enabled", True)
-    fresh_config.mark_initialized("debian")
+    fresh_config.mark_initialized("freebsd")  # made on another edition
     setup_pending_file.touch()
     engine.outputs[("zfs", "dataset_at_path")] = "tank/.freedomnas\n"
     return admin
@@ -264,6 +266,7 @@ def test_finishing_a_restore_takes_over_the_restored_administrator(
     assert fresh_config.get("system.ssh_enabled") is False
     assert not setup_pending_file.exists()
     assert restored.get("/api/setup/status").body["initialized"] is True
+    assert fresh_config.get_edition() == "debian"
 
 
 def test_ssh_comes_back_only_when_asked(restored, engine, fresh_config):

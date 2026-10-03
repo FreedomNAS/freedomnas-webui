@@ -142,12 +142,28 @@ def create_account(engine, config, new_user: str, password: str, groups=(),
             "username": new_user,
             "groups": groups,
             "shell": shell,
-            **({"uid": uid} if uid else {}),
-            **({"gid": gid} if gid else {}),
+            **account_ids(engine, new_user),
         })
     except (CommandExecutionError, CommandTranslationError, ConfigurationException):
         _undo_create(engine, new_user)
         raise
+
+
+def account_ids(engine, name: str) -> dict:
+    """
+    The user and group ID the system gave an account, for its configuration
+    entry: files on a pool carry these numbers, and an account recreated
+    elsewhere (a restore, another edition) must get the same ones back to
+    still own them.
+    """
+    try:
+        stdout, _ = engine.execute("users", "get_user_info", username=name, check=False)
+    except (CommandExecutionError, CommandTranslationError):
+        return {}
+    fields = (stdout or "").strip().split(":")
+    if len(fields) < 4 or not fields[2].isdigit() or not fields[3].isdigit():
+        return {}
+    return {"uid": int(fields[2]), "gid": int(fields[3])}
 
 
 def _undo_create(engine, target: str) -> None:
