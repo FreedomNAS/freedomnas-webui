@@ -93,6 +93,7 @@ def test_a_new_dataset_belongs_to_whoever_creates_it(client, engine, pool):
     r = client.post("/api/storage/datasets", {"parent": "tank", "name": "films"})
     assert r.body == {"dataset": "tank/films", "owner": "admin"}
     assert [c.argv for c in engine.called("directories", "owner_set")] == [["chown", "admin", "/tank/films"]]
+    assert [c.argv for c in engine.called("directories", "group_set")] == [["chgrp", "admin", "/tank/films"]]
     assert [c.argv for c in engine.called("directories", "mode_set")] == [["chmod", "0700", "/tank/films"]]
 
 
