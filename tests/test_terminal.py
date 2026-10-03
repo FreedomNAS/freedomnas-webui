@@ -126,6 +126,19 @@ def test_the_default_configuration_is_written_once(server, engine, config, files
     assert not any("Wrote default configuration" in m.get("line", "") for m in messages)
 
 
+
+def test_a_missing_file_is_rewritten_from_the_saved_steps(server, engine, config, files, launched):
+    """
+    The file lives on the system disk and the steps in the configuration: a
+    restored system has the second without the first. They come back as saved.
+    """
+    config.configure_topgrade(["system"])
+    path = files[("updates", "topgrade_config")]
+    messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert 'only = ["system"]' in path.read_text()
+    assert config.get("updates.topgrade.enabled_steps") == ["system"]
+    assert any("saved configuration" in m.get("line", "") for m in messages)
+
 def test_no_snapshot_when_auto_snapshot_is_off(server, engine, config, launched):
     config.add_pool({"name": "tank"})
     config.set("updates.topgrade.auto_snapshot", False)

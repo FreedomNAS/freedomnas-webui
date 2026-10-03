@@ -150,9 +150,13 @@ async def updates_terminal(websocket: WebSocket):
     try:
         config_path = engine.get_profile_value("updates", "topgrade_config")
         if not os.path.exists(config_path):
-            write_topgrade_config(engine, DEFAULT_STEPS)
-            config.configure_topgrade(DEFAULT_STEPS)
-            await _send(websocket, "stdout", f"Wrote default configuration to {config_path}")
+            if config.is_topgrade_configured():
+                write_topgrade_config(engine, config.get("updates.topgrade.enabled_steps"))
+                await _send(websocket, "stdout", f"Wrote the saved configuration to {config_path}")
+            else:
+                write_topgrade_config(engine, DEFAULT_STEPS)
+                config.configure_topgrade(DEFAULT_STEPS)
+                await _send(websocket, "stdout", f"Wrote default configuration to {config_path}")
     except (CommandTranslationError, ConfigurationException, OSError) as exc:
         await _send(websocket, "stderr", f"Warning: could not write topgrade.toml: {exc}")
 

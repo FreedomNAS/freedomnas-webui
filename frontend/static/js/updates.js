@@ -68,6 +68,10 @@ async function loadUpdateStatus() {
 
     const snapEl = document.getElementById('f-auto-snapshot');
     if (snapEl) snapEl.checked = d.auto_snapshot !== false;
+
+    if (Array.isArray(d.enabled_steps)) {
+      document.querySelectorAll('.f-step').forEach(c => { c.checked = d.enabled_steps.includes(c.value); });
+    }
   } catch (e) {
     toast(`Could not check updates: ${e.message}`, 'warn');
   }

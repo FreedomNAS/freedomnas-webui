@@ -35,6 +35,12 @@ def test_status_reports_the_topgrade_settings(client, config):
     body = client.get("/api/updates/status").body
     assert body["topgrade_configured"] is False
     assert body["auto_snapshot"] is True
+    assert body["enabled_steps"] == ["system", "containers", "firmware"]
+
+
+def test_status_reports_the_saved_steps(client, config):
+    config.configure_topgrade(["system", "firmware"])
+    assert client.get("/api/updates/status").body["enabled_steps"] == ["system", "firmware"]
 
 
 def test_configure_writes_a_topgrade_file_it_accepts(client, engine, config, files):

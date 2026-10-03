@@ -81,6 +81,8 @@ async def update_status(username: str = Depends(authenticate)):
         "refreshing": _refresh is not None and not _refresh.done(),
         "error": _pending["error"],
         "topgrade_configured": config.is_topgrade_configured(),
+        "enabled_steps": (config.get("updates.topgrade.enabled_steps")
+                          if config.is_topgrade_configured() else DEFAULT_STEPS),
         "auto_snapshot": config.get("updates.topgrade.auto_snapshot", True),
     }
 
