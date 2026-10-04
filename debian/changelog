@@ -1,3 +1,10 @@
+freedomnas-webui (0.9.9-1) unstable; urgency=medium
+
+  * Baseline release 0.9.9: the first snapshot tested on real hardware,
+    published from main; 1.0 is kept for the first complete release
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Sun, 04 Oct 2026 10:33:14 +0000
+
 freedomnas-webui (1.0-1) unstable; urgency=medium
 
   * Initial packaging
