@@ -27,9 +27,20 @@ PUT  /datasets/{name}/properties — change them
 GET  /snapshot-policies   — list the scheduled-snapshot policies
 PUT  /snapshot-policies/{dataset} — set how many to keep, per interval
 DELETE /snapshot-policies/{dataset} — stop scheduling (keeps existing snapshots)
+GET  /pools/{pool}/status — state, scrub/resilver progress and the vdev tree
+POST /pools/{pool}/scrub|trim|initialize — start, pause/suspend, stop/cancel
+POST /pools/{pool}/clear  — clear error counters, of the pool or one device
+POST /pools/{pool}/device — online, offline, expand, replace, attach, detach, remove one device
+POST /pools/{pool}/vdevs  — add data, special, dedup or spare vdevs
+GET  /pools/{pool}/history — zpool history
+GET  /pool-properties     — the pool properties this edition supports
+GET  /pools/{pool}/properties — what the pool has them set to
+PUT  /pools/{pool}/properties — change them
+POST /pools/{pool}/upgrade|checkpoint|reguid — feature upgrade, checkpoint, new GUID
 """
 
 import asyncio
+import json
 import logging
 import posixpath
 import re
@@ -628,6 +639,14 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
     devices = [str(d).strip() for d in (body.get("devices") or []) if str(d).strip()]
     cache = [str(d).strip() for d in (body.get("cache_devices") or []) if str(d).strip()]
     log = [str(d).strip() for d in (body.get("log_devices") or []) if str(d).strip()]
+    groups = body.get("vdevs") or []
+    if groups:
+        try:
+            spec = _vdev_words(groups)
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"detail": str(exc)})
+        devices = [d for g in groups for d in g.get("devices") or []]
+        vdev_type = ""
     encrypt = bool(body.get("encrypted"))
     passphrase = body.get("master_passphrase") or ""
 
@@ -636,6 +655,8 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
             "detail": "A pool name starts with a letter and holds letters, digits, _ . : -"})
     if not devices:
         return JSONResponse(status_code=422, content={"detail": "Select at least one device"})
+    if not groups:
+        spec = devices
     problem = layout_problem(vdev_type, devices, cache, log)
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
@@ -671,7 +692,7 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
             PoolProvisioner(engine).create_encrypted_pool(
                 pool_name=name,
                 vdev_type=vdev_type,
-                devices=" ".join(devices),
+                devices=" ".join(spec),
                 master_passphrase=passphrase,
                 usb_devices=usb,
             )
@@ -680,7 +701,7 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
                 "zfs", "pool_create",
                 pool_name=name,
                 vdev_type=vdev_type,
-                devices=" ".join(devices),
+                devices=" ".join(spec),
                 ashift=body.get("ashift", 12),
                 compression=body.get("compression", "lz4"),
             )
@@ -694,13 +715,16 @@ async def create_pool(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError) as exc:
         logger.warning("No shadow dataset on %s: %s", name, exc)
 
-    config.add_pool({
+    record = {
         "name": name,
         "vdev_type": vdev_type,
         "encrypted": encrypt,
         "cache_devices": attached["cache"],
         "log_devices": attached["log"],
-    })
+    }
+    if groups:
+        record["vdevs"] = [_vdev_record(g) for g in groups]
+    config.add_pool(record)
     return {"pool": name, "attached": attached, "warnings": attached["errors"]}
 
 
@@ -1035,3 +1059,224 @@ async def destroy_pool(pool_name: str, confirm: str = "", remove_shares: bool = 
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Pool administration: status, maintenance, devices, properties
+#
+# Everything ZFS can do to a pool after it exists. The WebUI offers these at
+# the Advanced and Expert levels only; the refusals that matter (a vdev that
+# cannot be removed, a mirror that would lose its last copy) come from ZFS.
+# ---------------------------------------------------------------------------
+
+def _vdev_record(group: dict) -> dict:
+    return {"class": group.get("class") or "data", "type": group.get("type") or "",
+            "devices": [str(d) for d in group.get("devices") or []]}
+
+
+def _vdev_words(groups) -> list:
+    if not isinstance(groups, list):
+        raise ValueError("vdevs must be a list")
+    clean = [_vdev_record(g) for g in groups if isinstance(g, dict)]
+    problem = layout_problem("", *[g["devices"] for g in clean])
+    if problem:
+        raise ValueError(problem)
+    return pool_devices.vdev_spec(clean)
+
+
+def _device_problem(device: str):
+    if not device or any(c.isspace() or not c.isprintable() for c in device) or device.startswith("-"):
+        return f"{device!r} is not a device of the pool"
+    return None
+
+
+async def _run(action: str, timeout: int = 60, **kwargs):
+    engine = get_engine()
+    try:
+        stdout, _ = await asyncio.to_thread(engine.execute, "zfs", action, timeout=timeout, **kwargs)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return None, JSONResponse(status_code=500, content={"detail": str(exc)})
+    return stdout, None
+
+
+MAINTENANCE = {
+    "scrub": {"start": "pool_scrub", "pause": "pool_scrub_pause", "stop": "pool_scrub_stop"},
+    "trim": {"start": "pool_trim", "suspend": "pool_trim_suspend", "cancel": "pool_trim_cancel"},
+    "initialize": {"start": "pool_initialize", "cancel": "pool_initialize_cancel"},
+}
+
+
+@router.get("/pools/{pool_name}/status")
+async def pool_status(pool_name: str, username: str = Depends(authenticate)):
+    engine = get_engine()
+    try:
+        result = await asyncio.to_thread(pool_devices.status, engine, pool_name)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": f"No pool called {pool_name}"})
+    result["system"] = pool_name == zfs_datasets.root_pool(engine)
+    return result
+
+
+@router.post("/pools/{pool_name}/{task}")
+async def pool_maintenance(pool_name: str, task: str, body: dict,
+                           username: str = Depends(authenticate)):
+    if task in MAINTENANCE:
+        action = MAINTENANCE[task].get(body.get("action") or "start")
+        if action is None:
+            return JSONResponse(status_code=422, content={
+                "detail": f"{task} takes one of {', '.join(MAINTENANCE[task])}"})
+        _, err = await _run(action, pool_name=pool_name)
+        return err or {"pool": pool_name, task: body.get("action") or "start"}
+    if task == "clear":
+        device = (body.get("device") or "").strip()
+        if device:
+            problem = _device_problem(device)
+            if problem:
+                return JSONResponse(status_code=422, content={"detail": problem})
+            _, err = await _run("pool_clear_device", pool_name=pool_name, device=device)
+        else:
+            _, err = await _run("pool_clear", pool_name=pool_name)
+        return err or {"pool": pool_name, "cleared": device or pool_name}
+    if task == "checkpoint":
+        action = "pool_checkpoint_discard" if body.get("discard") else "pool_checkpoint"
+        _, err = await _run(action, pool_name=pool_name)
+        return err or {"pool": pool_name, "checkpoint": "discarded" if body.get("discard") else "created"}
+    if task in ("upgrade", "reguid"):
+        if pool_name == zfs_datasets.root_pool(get_engine()):
+            return JSONResponse(status_code=422, content={
+                "detail": f"Not on the pool this system boots from: after {task} the boot "
+                          "loader or the initramfs may no longer find it"})
+        _, err = await _run(f"pool_{task}", pool_name=pool_name)
+        return err or {"pool": pool_name, task: True}
+    if task == "device":
+        return await _device_action(pool_name, body)
+    if task == "vdevs":
+        return await _add_vdevs(pool_name, body)
+    return JSONResponse(status_code=404, content={"detail": f"Unknown pool task: {task}"})
+
+
+DEVICE_ACTIONS = {
+    "online": "pool_online", "offline": "pool_offline",
+    "offline_temporary": "pool_offline_temporary", "expand": "pool_expand",
+    "replace": "pool_replace", "attach": "pool_attach", "detach": "pool_detach",
+    "remove": "pool_remove_device", "cancel_remove": "pool_remove_cancel",
+}
+
+
+async def _device_action(pool_name: str, body: dict):
+    action = body.get("action") or ""
+    device = (body.get("device") or "").strip()
+    new_device = (body.get("new_device") or "").strip()
+    if action not in DEVICE_ACTIONS:
+        return JSONResponse(status_code=422, content={
+            "detail": f"action must be one of {', '.join(DEVICE_ACTIONS)}"})
+    if action == "cancel_remove":
+        _, err = await _run("pool_remove_cancel", pool_name=pool_name)
+        return err or {"pool": pool_name, "action": action}
+    problem = _device_problem(device)
+    if problem:
+        return JSONResponse(status_code=422, content={"detail": problem})
+    kwargs = {"pool_name": pool_name, "device": device}
+    profile_action = DEVICE_ACTIONS[action]
+    if action == "attach" or (action == "replace" and new_device):
+        problem = layout_problem("", [new_device])
+        if problem:
+            return JSONResponse(status_code=422, content={"detail": problem})
+        kwargs["new_device"] = new_device
+    elif action == "replace":
+        profile_action = "pool_replace_in_place"
+    _, err = await _run(profile_action, timeout=120, **kwargs)
+    if err:
+        return err
+    if action == "remove":
+        config = get_config()
+        for pool in config.get_pools():
+            if pool.get("name") == pool_name:
+                changed = False
+                for key in ("cache_devices", "log_devices"):
+                    if device in pool.get(key, []):
+                        pool[key] = [d for d in pool[key] if d != device]
+                        changed = True
+                if changed:
+                    config.add_pool(pool)
+                break
+    return {"pool": pool_name, "action": action, "device": device, "new_device": new_device}
+
+
+async def _add_vdevs(pool_name: str, body: dict):
+    groups = body.get("vdevs") or []
+    try:
+        words = _vdev_words(groups)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    _, err = await _run("pool_add_vdevs", timeout=120, pool_name=pool_name, devices=" ".join(words))
+    if err:
+        return err
+    config = get_config()
+    for pool in config.get_pools():
+        if pool.get("name") == pool_name:
+            pool["vdevs"] = pool.get("vdevs", []) + [_vdev_record(g) for g in groups]
+            config.add_pool(pool)
+            break
+    return {"pool": pool_name, "added": [_vdev_record(g) for g in groups]}
+
+
+@router.get("/pools/{pool_name}/history")
+async def pool_history(pool_name: str, internal: bool = False,
+                       username: str = Depends(authenticate)):
+    stdout, err = await _run("pool_history_internal" if internal else "pool_history",
+                             pool_name=pool_name)
+    if err:
+        return err
+    lines = [ln for ln in stdout.splitlines() if ln and not ln.startswith("History for")]
+    return {"pool": pool_name, "internal": internal, "lines": lines}
+
+
+def _pool_catalogue():
+    return get_engine().get_profile_section("zpool_properties")
+
+
+@router.get("/pool-properties")
+async def list_pool_properties(username: str = Depends(authenticate)):
+    return {"properties": _pool_catalogue()}
+
+
+@router.get("/pools/{pool_name}/properties")
+async def get_pool_properties(pool_name: str, username: str = Depends(authenticate)):
+    stdout, err = await _run("pool_get_all", pool_name=pool_name)
+    if err:
+        return err
+    catalogue = _pool_catalogue()
+    found = pool_devices.parse_properties(stdout)
+    return {"pool": pool_name,
+            "properties": {k: v for k, v in found.items() if k in catalogue}}
+
+
+@router.put("/pools/{pool_name}/properties")
+async def set_pool_properties(pool_name: str, body: dict, username: str = Depends(authenticate)):
+    catalogue = _pool_catalogue()
+    wanted = {k: str(v) for k, v in body.items()}
+    if not wanted:
+        return JSONResponse(status_code=422, content={"detail": "Nothing to set"})
+    errors = []
+    for name, value in wanted.items():
+        spec = catalogue.get(name)
+        if spec is None:
+            errors.append(f"Unknown pool property: {name}")
+        elif spec["type"] == "enum" and value not in spec["values"]:
+            errors.append(f"{name} accepts {', '.join(spec['values'])} — not {value!r}")
+        elif spec["type"] == "text" and (len(value) > 256 or not value.isprintable()):
+            errors.append(f"{name} must be printable text of at most 256 characters")
+    if errors:
+        return JSONResponse(status_code=422, content={"detail": "; ".join(errors)})
+    applied, failed = [], []
+    for name, value in wanted.items():
+        _, err = await _run("pool_set", pool_name=pool_name, property=name, value=value)
+        if err:
+            failed.append({"property": name, "error": json.loads(err.body)["detail"]})
+        else:
+            applied.append(name)
+    return JSONResponse(status_code=200 if not failed else 207,
+                        content={"pool": pool_name, "applied": applied, "failed": failed})

@@ -86,6 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function switchTab(tab) {
   _activeTab = tab;
+  stopPoolDetail();
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${tab}`));
 
@@ -113,6 +114,8 @@ async function loadPools() {
       b.addEventListener('click', () => openRemovePool(b.dataset.export, 'export')));
     el.querySelectorAll('[data-destroy-pool]').forEach(b =>
       b.addEventListener('click', () => openRemovePool(b.dataset.destroyPool, 'destroy')));
+    el.querySelectorAll('[data-pool-detail]').forEach(b =>
+      b.addEventListener('click', () => openPoolDetail(b.dataset.poolDetail)));
     // Pre-fill snapshot dataset datalist
     const dl = document.getElementById('ds-list');
     if (dl) dl.innerHTML = d.pools.map(p => `<option value="${esc(p.name)}">`).join('');
@@ -372,6 +375,7 @@ function renderPool(p) {
         <div class="pool-stat-item"><span class="pool-stat-label">Free</span><span class="pool-stat-value">${poolSize(p.free)}</span></div>
       </div>
       <div class="advanced-only mt-3">
+        <button class="btn btn-primary btn-sm mb-4" data-pool-detail="${esc(p.name)}">Details and devices</button>
         ${attachedDevices(p, 'cache', 'Cache (L2ARC)')}
         ${attachedDevices(p, 'log', 'Log (SLOG)')}
         <button class="btn btn-secondary btn-sm" data-attach="${esc(p.name)}">Add cache or log device</button>
@@ -498,6 +502,7 @@ async function openPoolForm() {
   list.innerHTML = disks.map(d => `
     <label class="device-row${d.in_use ? ' device-busy' : ''}">
       <input type="checkbox" value="${esc(d.name)}"${d.in_use ? ' disabled' : ''}>
+      ${d.in_use ? '' : `<span class="advanced-only">${vdevGroupSelect(d.name)}</span>`}
       <span class="mono">${esc(d.name)}</span>
       <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
       ${d.in_use ? `<span class="badge badge-warn">${d.reserved ? 'ZFS reserved' : esc(d.fstype || d.mountpoint || 'in use')}</span>` : ''}
@@ -564,6 +569,15 @@ async function submitPool(e) {
   const encrypted = document.getElementById('f-pool-encrypt').checked;
   const passphrase = document.getElementById('f-pool-passphrase').value;
   const usb = encrypted ? [...document.querySelectorAll('#pool-usb input:checked')].map(i => i.value) : [];
+  const layout = document.getElementById('f-pool-layout').value;
+  const groups = uiLevel() === 'assisted' ? [] : collectVdevGroups(
+    document.getElementById('pool-devices'), layout).filter(g => g.devices.some(d => devices.includes(d)))
+    .map(g => ({ ...g, devices: g.devices.filter(d => devices.includes(d)) }));
+  const ungrouped = devices.filter(d => !groups.some(g => g.devices.includes(d)));
+  const advancedLayout = groups.length && groups.some(g => !(g.class === 'data' && g.devices.length === devices.length));
+  if (advancedLayout && ungrouped.length) {
+    toast(`Choose a vdev for ${ungrouped.join(', ')}, or untick it.`, 'err'); return;
+  }
 
   if (!devices.length) { toast('Select at least one data device.', 'err'); return; }
   if (!await confirm('Create Pool', `Create <strong>${esc(name)}</strong> on:<br><span class="mono">${devices.map(esc).join('<br>')}</span><br><br>Everything on those devices will be destroyed.`, 'Create and erase')) return;
@@ -573,8 +587,9 @@ async function submitPool(e) {
   try {
     const res = await apiJSON('POST', '/api/storage/pools', {
       name,
-      vdev_type: document.getElementById('f-pool-layout').value,
+      vdev_type: layout,
       devices,
+      vdevs: advancedLayout ? groups : [],
       cache_devices: cache ? [cache] : [],
       log_devices: log ? [log] : [],
       encrypted,
@@ -1114,4 +1129,387 @@ async function openRemovePool(pool, action) {
       closeModal('modal-dataset');
       loadPools();
     }, destroy);
+}
+
+
+// ── Pool detail (Advanced and Expert) ────────────────────────────────────────
+// Status and vdev tree of one pool, with what ZFS can do to it after it exists.
+// A scrub or resilver in progress refreshes the view every few seconds.
+
+let _detailPool = null;
+let _detailTimer = null;
+
+const ROLE_LABELS = {
+  data: 'Data vdevs', special: 'Special vdevs (metadata)', dedup: 'Dedup vdevs',
+  log: 'Log devices (SLOG)', cache: 'Cache devices (L2ARC)', spare: 'Hot spares',
+};
+
+function uiLevel() { return document.body.dataset.ui || 'assisted'; }
+
+function stopPoolDetail() {
+  if (_detailTimer) clearTimeout(_detailTimer);
+  _detailTimer = null;
+  _detailPool = null;
+}
+
+async function openPoolDetail(pool) {
+  stopPoolDetail();
+  _detailPool = pool;
+  const el = document.getElementById('panel-pools');
+  el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  await refreshPoolDetail();
+}
+
+async function refreshPoolDetail() {
+  const pool = _detailPool;
+  if (!pool) return;
+  const el = document.getElementById('panel-pools');
+  let st;
+  try {
+    st = await apiJSON('GET', `/api/storage/pools/${encodeURIComponent(pool)}/status`);
+  } catch (e) {
+    el.innerHTML = `<button class="btn btn-ghost btn-sm" id="pool-back">← All pools</button>${errorState(e.message)}`;
+    document.getElementById('pool-back').addEventListener('click', backToPools);
+    return;
+  }
+  if (_detailPool !== pool) return;
+  el.innerHTML = renderPoolDetail(st);
+  bindPoolDetail(st);
+  const busy = st.scan?.state === 'SCANNING' || st.removing ||
+    st.groups.some(g => g.vdevs.some(v => hasType(v, ['replacing', 'spare'])));
+  if (busy) _detailTimer = setTimeout(refreshPoolDetail, 3000);
+}
+
+function hasType(v, types) {
+  return types.includes(v.type) || v.children.some(c => hasType(c, types));
+}
+
+function backToPools() {
+  stopPoolDetail();
+  loadPools();
+}
+
+function stateBadge(state) {
+  const cls = ['ONLINE', 'AVAIL'].includes(state) ? 'ok'
+            : ['DEGRADED', 'OFFLINE', 'REMOVED', 'INUSE'].includes(state) ? 'warn'
+            : state ? 'err' : 'muted';
+  return `<span class="badge badge-${cls}">${esc(state || '—')}</span>`;
+}
+
+function scanSummary(scan) {
+  if (!scan) return 'No scrub has run on this pool yet.';
+  const what = scan.function === 'RESILVER' ? 'Resilver' : 'Scrub';
+  if (scan.state === 'SCANNING') {
+    return `${what} ${scan.percent ?? 0}% — ${humanSize(scan.done)} of ${humanSize(scan.total)}` +
+      (scan.paused ? ' (paused)' : '');
+  }
+  const when = scan.end_time ? new Date(scan.end_time * 1000).toLocaleString() : '';
+  if (scan.state === 'FINISHED') return `${what} finished ${when}, ${scan.errors} error(s).`;
+  if (scan.state === 'CANCELED') return `${what} stopped ${when}.`;
+  return `${what}: ${scan.state}`;
+}
+
+function renderPoolDetail(st) {
+  const expert = uiLevel() === 'expert';
+  const scanning = st.scan?.state === 'SCANNING' && st.scan.function !== 'RESILVER';
+  const pct = st.scan?.state === 'SCANNING' ? (st.scan.percent ?? 0) : null;
+  return `
+    <div class="d-flex gap-3 mb-4" style="align-items:center;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" id="pool-back">← All pools</button>
+      <h2 class="pool-name" style="margin:0">${esc(st.name)}</h2>
+      ${stateBadge(st.state)}
+      ${st.system ? '<span class="badge badge-info">system pool</span>' : ''}
+    </div>
+    ${st.status ? `<div class="alert alert-warn mb-4"><span><strong>Problem:</strong> ${esc(st.status)}</span></div>` : ''}
+    ${st.action ? `<div class="alert alert-info mb-4"><span><strong>What to do:</strong> ${esc(st.action)}</span></div>` : ''}
+    <div class="card mb-4">
+      <div class="card-header">Scrub and maintenance</div>
+      <p class="mt-2">${esc(scanSummary(st.scan))}</p>
+      ${pct !== null ? `<div class="progress-wrap mt-2"><div class="progress-bar ok" style="width:${pct}%"></div></div>` : ''}
+      <p class="text-muted mt-2">${st.error_count ? `${st.error_count} data error(s): run a scrub, then check the files ZFS lists.` : 'No known data errors.'}</p>
+      <div class="d-flex gap-2 mt-3" style="flex-wrap:wrap">
+        ${scanning
+          ? `<button class="btn btn-secondary btn-sm" data-maint="scrub:pause">${st.scan.paused ? 'Resume scrub' : 'Pause scrub'}</button>
+             <button class="btn btn-secondary btn-sm" data-maint="scrub:stop">Stop scrub</button>`
+          : `<button class="btn btn-primary btn-sm" data-maint="scrub:start">Start scrub</button>`}
+        <button class="btn btn-secondary btn-sm" data-maint="trim:start">Start TRIM</button>
+        <button class="btn btn-secondary btn-sm" data-maint="trim:cancel">Stop TRIM</button>
+        <button class="btn btn-secondary btn-sm" data-pool-clear>Clear errors</button>
+        <button class="btn btn-secondary btn-sm" data-pool-add>Add vdevs</button>
+        <button class="btn btn-secondary btn-sm" data-pool-history>History</button>
+        ${st.removing ? '<button class="btn btn-secondary btn-sm" data-cancel-remove>Cancel device removal</button>' : ''}
+      </div>
+      ${expert ? `
+      <div class="d-flex gap-2 mt-3" style="flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" data-pool-props>Pool properties</button>
+        <button class="btn btn-secondary btn-sm" data-maint="initialize:start">Initialize free space</button>
+        <button class="btn btn-secondary btn-sm" data-maint="initialize:cancel">Stop initializing</button>
+        ${st.checkpoint
+          ? '<button class="btn btn-secondary btn-sm" data-checkpoint="discard">Discard checkpoint</button>'
+          : '<button class="btn btn-secondary btn-sm" data-checkpoint="create">Create checkpoint</button>'}
+        ${st.system ? '' : `
+          <button class="btn btn-secondary btn-sm" data-pool-task="upgrade">Upgrade features</button>
+          <button class="btn btn-secondary btn-sm" data-pool-task="reguid">New GUID</button>`}
+      </div>` : ''}
+    </div>
+    ${st.groups.map(g => `
+      <div class="card mb-4">
+        <div class="card-header">${esc(ROLE_LABELS[g.role] || g.role)}</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Device</th><th>Type</th><th>State</th><th>Errors R/W/C</th><th>Size</th><th></th></tr></thead>
+          <tbody>${g.vdevs.map(v => vdevRows(v, g.role)).join('')}</tbody>
+        </table></div>
+      </div>`).join('')}`;
+}
+
+function vdevRows(v, role) {
+  const errors = [v.read_errors, v.write_errors, v.checksum_errors];
+  const actions = vdevActions(v, role);
+  const row = `
+    <tr>
+      <td style="padding-left:${12 + 22 * v.depth}px"><span class="mono">${esc(v.path || v.name)}</span></td>
+      <td>${esc(v.type)}</td>
+      <td>${stateBadge(v.state)}</td>
+      <td class="${errors.some(Boolean) ? 'text-err' : 'text-muted'}">${errors.join(' / ')}</td>
+      <td>${v.size ? humanSize(v.size) : '—'}</td>
+      <td>${actions.length ? `
+        <select class="select" data-vdev="${esc(v.path || v.name)}" style="min-width:9rem">
+          <option value="">Actions…</option>
+          ${actions.map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join('')}
+        </select>` : ''}</td>
+    </tr>`;
+  return row + v.children.map(c => vdevRows(c, role)).join('');
+}
+
+function vdevActions(v, role) {
+  const expert = uiLevel() === 'expert';
+  const leaf = !v.children.length;
+  const list = [];
+  if (!leaf) {
+    list.push(['clear', 'Clear errors']);
+    if (v.depth === 0 && v.type === 'mirror') list.push(['remove', 'Remove from pool']);
+    return list;
+  }
+  if (role === 'spare') return [['remove', 'Remove spare']];
+  if (['OFFLINE', 'UNAVAIL', 'REMOVED', 'FAULTED'].includes(v.state)) list.push(['online', 'Bring online']);
+  else {
+    list.push(['offline', 'Take offline']);
+    if (expert) list.push(['offline_temporary', 'Take offline until reboot']);
+  }
+  if (role !== 'cache') list.push(['replace', 'Replace…']);
+  if (role !== 'cache' && (v.depth === 0 || v.parent_type === 'mirror')) list.push(['attach', 'Attach a mirror…']);
+  if (['mirror', 'replacing', 'spare'].includes(v.parent_type)) list.push(['detach', 'Detach']);
+  list.push(['expand', 'Expand to full size']);
+  list.push(['clear', 'Clear errors']);
+  if (v.depth === 0) list.push(['remove', 'Remove from pool']);
+  return list;
+}
+
+function bindPoolDetail(st) {
+  const pool = st.name;
+  const el = document.getElementById('panel-pools');
+  document.getElementById('pool-back').addEventListener('click', backToPools);
+  el.querySelectorAll('[data-maint]').forEach(b => b.addEventListener('click', async () => {
+    const [task, action] = b.dataset.maint.split(':');
+    await poolTask(pool, task, { action });
+  }));
+  el.querySelector('[data-pool-clear]')?.addEventListener('click', () => poolTask(pool, 'clear', {}));
+  el.querySelector('[data-pool-add]')?.addEventListener('click', () => openAddVdevs(pool));
+  el.querySelector('[data-pool-history]')?.addEventListener('click', () => openPoolHistory(pool));
+  el.querySelector('[data-pool-props]')?.addEventListener('click', () => openPoolProperties(pool));
+  el.querySelector('[data-cancel-remove]')?.addEventListener('click', () =>
+    poolTask(pool, 'device', { action: 'cancel_remove' }));
+  el.querySelectorAll('[data-checkpoint]').forEach(b => b.addEventListener('click', async () => {
+    const discard = b.dataset.checkpoint === 'discard';
+    if (!await confirm(discard ? 'Discard checkpoint' : 'Create checkpoint', discard
+      ? 'The pool can no longer be rewound to the checkpoint.'
+      : 'A checkpoint lets the whole pool be rewound to this moment at the next import. While it exists, freed space is not given back and some device operations are refused.',
+      discard ? 'Discard' : 'Create')) return;
+    await poolTask(pool, 'checkpoint', { discard });
+  }));
+  el.querySelectorAll('[data-pool-task]').forEach(b => b.addEventListener('click', async () => {
+    const task = b.dataset.poolTask;
+    const msg = task === 'upgrade'
+      ? `Enable every feature this ZFS supports on <strong>${esc(pool)}</strong>? Older ZFS versions and other systems may no longer be able to import it. This cannot be undone.`
+      : `Give <strong>${esc(pool)}</strong> a new unique identifier? Only needed when two pools have the same GUID, e.g. after copying disks.`;
+    if (!await confirm(task === 'upgrade' ? 'Upgrade pool' : 'New GUID', msg, task === 'upgrade' ? 'Upgrade' : 'Change GUID')) return;
+    await poolTask(pool, task, {});
+  }));
+  el.querySelectorAll('select[data-vdev]').forEach(sel => sel.addEventListener('change', async () => {
+    const action = sel.value;
+    sel.value = '';
+    if (action) await vdevAction(pool, sel.dataset.vdev, action);
+  }));
+}
+
+async function poolTask(pool, task, body) {
+  try {
+    await apiJSON('POST', `/api/storage/pools/${encodeURIComponent(pool)}/${task}`, body);
+    toast('Done.', 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+  if (_detailPool === pool) {
+    if (_detailTimer) clearTimeout(_detailTimer);
+    _detailTimer = null;
+    refreshPoolDetail();
+  }
+}
+
+const VDEV_CONFIRM = {
+  offline: ['Take offline', 'The pool loses redundancy while the device is offline.'],
+  offline_temporary: ['Take offline', 'The device comes back by itself at the next reboot. The pool loses redundancy meanwhile.'],
+  detach: ['Detach', 'The device leaves the mirror and can no longer be used to recover data.'],
+  remove: ['Remove', 'ZFS first copies the data of a data vdev to the others; this is refused when the pool has RAID-Z vdevs. Cache, log and spare devices hold no data.'],
+};
+
+async function vdevAction(pool, device, action) {
+  if (action === 'replace' || action === 'attach') { pickDevice(pool, device, action); return; }
+  if (action === 'clear') { await poolTask(pool, 'clear', { device }); return; }
+  if (VDEV_CONFIRM[action]) {
+    const [label, msg] = VDEV_CONFIRM[action];
+    if (!await confirm(`${label} ${esc(device)}?`, msg, label)) return;
+  }
+  await poolTask(pool, 'device', { action, device });
+}
+
+async function freeDevices() {
+  const devices = (await apiJSON('GET', '/api/storage/devices')).devices;
+  return devices.filter(d => (d.type === 'disk' || d.type === 'part') && !d.in_use);
+}
+
+async function pickDevice(pool, device, action) {
+  let free;
+  try { free = await freeDevices(); } catch (e) { toast(e.message, 'err'); return; }
+  const replace = action === 'replace';
+  const list = free.length ? free.map(d => `
+    <label class="device-row">
+      <input type="radio" name="pick-device" value="${esc(d.name)}">
+      <span class="mono">${esc(d.name)}</span>
+      <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
+    </label>`).join('') : '<span class="text-muted">No free device found.</span>';
+  datasetDialog(replace ? `Replace ${device}` : `Attach a mirror to ${device}`,
+    replace ? 'Replace' : 'Attach', `
+    ${replace ? `<div class="form-group"><label class="form-label">
+      <input type="checkbox" id="pick-in-place"> The failed disk was swapped for a new one at the same place</label></div>` : ''}
+    <div class="form-group">
+      <label class="form-label">New device</label>
+      <div class="device-list">${list}</div>
+      <span class="form-hint">Everything on it is destroyed. ZFS then copies the data onto it (resilver).</span>
+    </div>`, async () => {
+      const inPlace = replace && document.getElementById('pick-in-place').checked;
+      const chosen = document.querySelector('input[name="pick-device"]:checked')?.value;
+      if (!inPlace && !chosen) { toast('Choose a device.', 'err'); return; }
+      const target = inPlace ? device : chosen;
+      if (!await confirm(replace ? 'Replace device' : 'Attach device',
+        `Everything on <span class="mono">${esc(target)}</span> is destroyed.`, replace ? 'Replace' : 'Attach')) return;
+      closeModal('modal-dataset');
+      await poolTask(pool, 'device', { action, device, new_device: inPlace ? '' : chosen });
+    }, true);
+}
+
+function vdevGroupSelect(name) {
+  return `<select class="select" data-group-for="${esc(name)}" style="width:auto;flex:0 0 auto">
+    <option value="">Not used</option>
+    <option value="data:1">Data vdev 1</option>
+    <option value="data:2">Data vdev 2</option>
+    <option value="data:3">Data vdev 3</option>
+    <option value="data:4">Data vdev 4</option>
+    <option value="special:1">Special (metadata)</option>
+    <option value="dedup:1">Dedup table</option>
+    <option value="spare:1">Hot spare</option>
+  </select>`;
+}
+
+const LAYOUT_OPTIONS = `
+  <option value="">Single / stripe — no redundancy</option>
+  <option value="mirror" selected>Mirror</option>
+  <option value="raidz1">RAIDZ1</option>
+  <option value="raidz2">RAIDZ2</option>
+  <option value="raidz3">RAIDZ3</option>`;
+
+function collectVdevGroups(scope, dataLayout) {
+  const groups = new Map();
+  scope.querySelectorAll('select[data-group-for]').forEach(sel => {
+    if (!sel.value) return;
+    if (!groups.has(sel.value)) groups.set(sel.value, []);
+    groups.get(sel.value).push(sel.dataset.groupFor);
+  });
+  return [...groups.entries()].sort().map(([key, devices]) => {
+    const cls = key.split(':')[0];
+    const type = cls === 'data' ? dataLayout
+               : cls === 'spare' ? ''
+               : devices.length > 1 ? 'mirror' : '';
+    return { class: cls, type, devices };
+  });
+}
+
+async function openAddVdevs(pool) {
+  let free;
+  try { free = await freeDevices(); } catch (e) { toast(e.message, 'err'); return; }
+  const rows = free.length ? free.map(d => `
+    <div class="device-row">
+      ${vdevGroupSelect(d.name)}
+      <span class="mono">${esc(d.name)}</span>
+      <span class="text-muted">${humanSize(d.size)}${d.model ? ' — ' + esc(d.model) : ''}</span>
+    </div>`).join('') : '<span class="text-muted">No free device found.</span>';
+  datasetDialog(`Add vdevs to ${pool}`, 'Add', `
+    <div class="alert alert-warn mb-4"><span>Data vdevs usually cannot be removed again, and never from a pool with RAID-Z vdevs. Match the redundancy of the vdevs already there.</span></div>
+    <div class="form-group">
+      <label class="form-label" for="add-layout">Layout of the new data vdevs</label>
+      <select id="add-layout" class="select">${LAYOUT_OPTIONS}</select>
+      <span class="form-hint">Special and dedup vdevs become a mirror when they get two or more devices.</span>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Devices</label>
+      <div class="device-list" id="add-vdev-devices">${rows}</div>
+    </div>`, async () => {
+      const groups = collectVdevGroups(document.getElementById('add-vdev-devices'),
+        document.getElementById('add-layout').value);
+      if (!groups.length) { toast('Assign at least one device.', 'err'); return; }
+      const all = groups.flatMap(g => g.devices);
+      if (!await confirm('Add vdevs', `Add to <strong>${esc(pool)}</strong> and erase:<br><span class="mono">${all.map(esc).join('<br>')}</span>`, 'Add and erase')) return;
+      closeModal('modal-dataset');
+      await poolTask(pool, 'vdevs', { vdevs: groups });
+    }, true);
+}
+
+async function openPoolHistory(pool) {
+  const expert = uiLevel() === 'expert';
+  datasetDialog(`History of ${pool}`, 'Close', `
+    ${expert ? `<label class="form-label"><input type="checkbox" id="history-internal"> Include internal events</label>` : ''}
+    <pre class="mono" id="history-text" style="max-height:24rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem"></pre>`,
+    async () => closeModal('modal-dataset'));
+  const load = async () => {
+    const internal = document.getElementById('history-internal')?.checked || false;
+    const box = document.getElementById('history-text');
+    box.textContent = 'Loading…';
+    try {
+      const res = await apiJSON('GET', `/api/storage/pools/${encodeURIComponent(pool)}/history?internal=${internal}`);
+      box.textContent = res.lines.slice().reverse().join('\n') || 'Nothing recorded.';
+    } catch (e) { box.textContent = e.message; }
+  };
+  document.getElementById('history-internal')?.addEventListener('change', load);
+  load();
+}
+
+let poolPropCatalogue = null;
+
+async function openPoolProperties(pool) {
+  try {
+    if (!poolPropCatalogue) poolPropCatalogue = (await apiJSON('GET', '/api/storage/pool-properties')).properties;
+    const current = (await apiJSON('GET', `/api/storage/pools/${encodeURIComponent(pool)}/properties`)).properties;
+    datasetDialog(`Properties of ${pool}`, 'Apply', `<div id="pool-props">${
+      Object.entries(poolPropCatalogue).map(([name, spec]) => propertyRow(name, spec, current[name])).join('')
+    }</div>`, async () => {
+      const changed = {};
+      document.querySelectorAll('#pool-props [data-prop]').forEach(el => {
+        if (el.value !== el.dataset.was) changed[el.dataset.prop] = el.value;
+      });
+      if (!Object.keys(changed).length) { closeModal('modal-dataset'); return; }
+      const res = await apiJSON('PUT', `/api/storage/pools/${encodeURIComponent(pool)}/properties`, changed);
+      if (res.failed?.length) toast(`Not applied: ${res.failed.map(f => f.property).join(', ')}`, 'err');
+      else { toast(`Applied: ${res.applied.join(', ')}`, 'ok'); closeModal('modal-dataset'); }
+    });
+  } catch (e) { toast(e.message, 'err'); }
 }
