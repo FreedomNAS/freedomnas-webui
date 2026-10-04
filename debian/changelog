@@ -1,3 +1,10 @@
+freedomnas-webui (0.9.10-1) unstable; urgency=medium
+
+  * The installer reads one package component, its channel: main for
+    images built from main, dev otherwise
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Sun, 04 Oct 2026 14:09:51 +0000
+
 freedomnas-webui (0.9.9-1) unstable; urgency=medium
 
   * Baseline release 0.9.9: the first snapshot tested on real hardware,
