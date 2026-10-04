@@ -46,6 +46,11 @@ DELETE /snapshots/{snap}  — destroy a snapshot
 POST /snapshots/{snap}/rollback|clone|rename|hold|release|bookmark
 GET  /snapshots/{snap}/holds|diff — holds, and what changed since
 GET  /bookmarks, DELETE /bookmarks/{bookmark}
+GET  /replication/jobs    — local send/receive jobs and their progress
+POST /replication/estimate|replicate|send-to-file|receive-from-file — start one
+POST /replication/jobs/{id}/cancel — stop a running job
+GET  /replication/resumable — datasets with an interrupted receive
+POST /replication/resume|abort — continue it, or throw the partial data away
 """
 
 import asyncio
@@ -65,6 +70,7 @@ from freedomnas import pool_import
 from freedomnas import pool_removal
 from freedomnas import shadow
 from freedomnas import snapshots as zfs_snapshots
+from freedomnas import replication
 from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
@@ -1543,3 +1549,70 @@ async def destroy_bookmark(bookmark: str, username: str = Depends(authenticate))
         return _problem(422, f"{bookmark!r} is not a bookmark name (dataset#name)")
     _, err = await _run("bookmark_destroy", bookmark=bookmark)
     return err or {"destroyed": bookmark}
+
+
+# ---------------------------------------------------------------------------
+# Local replication
+#
+# zfs send | zfs receive between pools of this system, or into and out of a
+# stream file. Each transfer is a job in freedomnas.replication; the page
+# polls /replication/jobs for its progress.
+# ---------------------------------------------------------------------------
+
+async def _replication(fn, *args):
+    try:
+        return await asyncio.to_thread(fn, get_engine(), *args), None
+    except replication.ReplicationProblem as exc:
+        return None, _problem(422, str(exc))
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return None, _problem(500, str(exc))
+
+
+@router.get("/replication/jobs")
+async def replication_jobs(username: str = Depends(authenticate)):
+    return {"jobs": replication.jobs()}
+
+
+@router.post("/replication/estimate")
+async def replication_estimate(body: dict, username: str = Depends(authenticate)):
+    size, err = await _replication(replication.estimate, body)
+    return err or {"size": size}
+
+
+@router.post("/replication/{kind}")
+async def replication_start(kind: str, body: dict, username: str = Depends(authenticate)):
+    starters = {"replicate": replication.replicate, "send-to-file": replication.send_to_file,
+                "receive-from-file": replication.receive_from_file}
+    if kind == "resume":
+        target = str(body.get("target") or "").strip()
+        tokens, err = await _replication(replication.resume_tokens)
+        if err:
+            return err
+        token = next((t["token"] for t in tokens if t["dataset"] == target), None)
+        if token is None:
+            return _problem(404, f"{target} has no interrupted receive")
+        job, err = await _replication(replication.resume, target, token, body)
+        return err or job.to_dict()
+    if kind == "abort":
+        _, err = await _replication(replication.abort_receive, str(body.get("target") or ""))
+        return err or {"aborted": body.get("target")}
+    if kind not in starters:
+        return _problem(404, f"Unknown replication request: {kind}")
+    job, err = await _replication(starters[kind], body)
+    return err or job.to_dict()
+
+
+@router.post("/replication/jobs/{job_id}/cancel")
+async def replication_cancel(job_id: int, username: str = Depends(authenticate)):
+    job = replication.get(job_id)
+    if job is None:
+        return _problem(404, f"No job {job_id}")
+    if not await asyncio.to_thread(job.cancel):
+        return _problem(409, f"Job {job_id} is not running")
+    return {"cancelled": job_id}
+
+
+@router.get("/replication/resumable")
+async def replication_resumable(username: str = Depends(authenticate)):
+    tokens, err = await _replication(replication.resume_tokens)
+    return err or {"datasets": [t["dataset"] for t in tokens]}

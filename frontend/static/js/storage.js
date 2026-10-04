@@ -88,6 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 function switchTab(tab) {
   _activeTab = tab;
   stopPoolDetail();
+  stopReplicationPoll();
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${tab}`));
 
@@ -97,6 +98,7 @@ function switchTab(tab) {
   if (tab === 'pools')     loadPools();
   if (tab === 'datasets')  loadDatasets();
   if (tab === 'snapshots') loadSnapshots();
+  if (tab === 'replication') loadReplication();
   if (tab === 'disks')     loadDisks();
 }
 
@@ -1889,4 +1891,248 @@ async function openDiff(name) {
   };
   document.getElementById('diff-to').addEventListener('change', load);
   load();
+}
+
+
+
+// ── Local replication (Advanced and Expert) ──────────────────────────────────
+// zfs send | zfs receive between pools of this NAS, or into and out of a
+// stream file. Transfers run as jobs on the NAS; this tab polls their progress.
+
+let _replTimer = null;
+let _replSnaps = [];
+let _replMarks = [];
+const _replRate = {};
+
+const SEND_OPTIONS = [
+  ['replicate', 'Replication stream (-R)', 'Children, properties, snapshots and clones', 'advanced', false],
+  ['raw', 'Raw (-w)', 'Encrypted data stays encrypted; the key is not needed on the way', 'advanced', false],
+  ['compressed', 'Compressed (-c)', 'Send blocks as they are compressed on disk', 'advanced', true],
+  ['large_blocks', 'Large blocks (-L)', 'Keep records bigger than 128 KiB as they are', 'advanced', true],
+  ['embed', 'Embedded data (-e)', '', 'expert', false],
+  ['props', 'Properties (-p)', 'Include the dataset properties', 'expert', false],
+  ['holds', 'Holds (-h)', '', 'expert', false],
+  ['skip_missing', 'Skip missing snapshots (-s)', 'With -R only', 'expert', false],
+];
+
+function stopReplicationPoll() {
+  if (_replTimer) clearTimeout(_replTimer);
+  _replTimer = null;
+}
+
+async function loadReplication() {
+  stopReplicationPoll();
+  const el = document.getElementById('panel-replication');
+  el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  try {
+    const [snaps, marks, ds] = await Promise.all([
+      apiJSON('GET', '/api/storage/snapshots'),
+      apiJSON('GET', '/api/storage/bookmarks').catch(() => ({ bookmarks: [] })),
+      apiJSON('GET', '/api/storage/datasets'),
+    ]);
+    _replSnaps = snaps.snapshots || [];
+    _replMarks = marks.bookmarks || [];
+    el.innerHTML = renderReplicationForm(ds.datasets || []);
+    bindReplication();
+    refreshTransfers();
+  } catch (e) {
+    el.innerHTML = errorState(e.message);
+  }
+}
+
+function renderReplicationForm(datasets) {
+  const expert = uiLevel() === 'expert';
+  const targets = datasets.filter(d => !d.protected).map(d => d.name);
+  return `
+    <div class="card mb-4">
+      <div class="card-header">Send a snapshot</div>
+      <div class="d-flex flex-col gap-3 mt-3">
+      <div class="form-group"><label class="form-label" for="repl-snap">Snapshot</label>
+        <select id="repl-snap" class="select">${_replSnaps.map(s =>
+          `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('') || '<option value="">No snapshots</option>'}</select></div>
+      <div class="form-group"><label class="form-label" for="repl-base">Incremental from</label>
+        <select id="repl-base" class="select"></select>
+        <span class="form-hint">Only what changed since the base is sent; the target must already hold the base.</span></div>
+      <div class="form-group"><label class="form-label"><input type="checkbox" id="repl-inter"> Include the snapshots in between (-I)</label></div>
+      <div class="form-group"><label class="form-label">Send to</label>
+        <div class="device-list">
+          <label class="device-row"><input type="radio" name="repl-mode" value="dataset" checked> <span>A dataset on this NAS</span></label>
+          <label class="device-row"><input type="radio" name="repl-mode" value="file"> <span>A stream file</span></label>
+        </div></div>
+      <div class="form-group" id="repl-target-group"><label class="form-label" for="repl-target">Target dataset</label>
+        <input id="repl-target" class="input mono" type="text" list="repl-targets" autocomplete="off" placeholder="backup/documents">
+        <datalist id="repl-targets">${targets.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
+        <span class="form-hint">A dataset that does not exist yet is created by the transfer. Not on the system's pool.</span></div>
+      <div class="form-group" id="repl-file-group" hidden><label class="form-label" for="repl-file">Stream file</label>
+        <input id="repl-file" class="input mono" type="text" autocomplete="off" placeholder="/tank/backup/documents.zfs">
+        <span class="form-hint">On a dataset, not a system directory. An existing file is never overwritten.</span></div>
+      <div class="form-group"><label class="form-label">Stream options</label>
+        <div class="device-list">${SEND_OPTIONS.filter(o => o[3] === 'advanced' || expert).map(([k, label, hint, , on]) => `
+          <label class="device-row"><input type="checkbox" data-send="${k}"${on ? ' checked' : ''}>
+            <span>${esc(label)}</span><span class="text-muted">${esc(hint)}</span></label>`).join('')}</div></div>
+      <div class="form-group" id="repl-recv-group"><label class="form-label">Receiving side</label>
+        <div class="device-list">
+          <label class="device-row"><input type="checkbox" id="repl-nomount" checked> <span>Do not mount what is received (-u)</span></label>
+          <label class="device-row"><input type="checkbox" id="repl-resumable" checked> <span>Resumable if interrupted (-s)</span></label>
+          <label class="device-row"><input type="checkbox" id="repl-nomp" checked> <span>Do not copy the mountpoint</span>
+            <span class="text-muted">so the copy never mounts over the original</span></label>
+          ${expert ? `<label class="device-row"><input type="checkbox" id="repl-force"> <span>Roll the target back if it changed (-F)</span>
+            <span class="text-muted">destroys snapshots the source does not have</span></label>` : ''}
+        </div></div>
+      <div class="d-flex gap-2" style="align-items:center;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="repl-estimate">Estimate size</button>
+        <span class="text-muted" id="repl-estimate-out"></span>
+        <button class="btn btn-primary btn-sm" id="repl-start">Start</button>
+      </div>
+      </div>
+    </div>
+    <div class="card mb-4">
+      <div class="card-header">Transfers</div>
+      <div id="repl-jobs" class="mt-3"></div>
+    </div>
+    <div class="card mb-4" id="repl-resumable-card" hidden>
+      <div class="card-header">Interrupted receives</div>
+      <p class="text-muted mt-2">A resumable transfer that stopped half-way keeps what it received; resume it or throw it away.</p>
+      <div id="repl-resumable-list"></div>
+    </div>
+    <div class="card mb-4">
+      <div class="card-header">Receive from a stream file</div>
+      <div class="d-flex flex-col gap-3 mt-3">
+      <div class="form-group"><label class="form-label" for="repl-in-file">Stream file</label>
+        <input id="repl-in-file" class="input mono" type="text" autocomplete="off" placeholder="/tank/backup/documents.zfs"></div>
+      <div class="form-group"><label class="form-label" for="repl-in-target">Target dataset</label>
+        <input id="repl-in-target" class="input mono" type="text" list="repl-targets" autocomplete="off"></div>
+      <div><button class="btn btn-primary btn-sm" id="repl-receive">Receive</button></div>
+      </div>
+    </div>`;
+}
+
+function fillReplBase() {
+  const snap = document.getElementById('repl-snap').value;
+  const me = _replSnaps.find(s => s.name === snap);
+  const ds = snap.split('@')[0];
+  const older = _replSnaps.filter(s => s.dataset === ds && s.name !== snap && me &&
+    typeof s.creation === 'number' && s.creation < me.creation);
+  const marks = _replMarks.filter(m => m.dataset === ds);
+  document.getElementById('repl-base').innerHTML = '<option value="">Nothing — send everything</option>' +
+    older.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('') +
+    marks.map(m => `<option value="${esc(m.name)}">${esc(m.name)} (bookmark)</option>`).join('');
+}
+
+function replicationRequest() {
+  const body = { snapshot: document.getElementById('repl-snap').value };
+  const base = document.getElementById('repl-base').value;
+  if (base) {
+    body.from = base;
+    body.intermediates = document.getElementById('repl-inter').checked && !base.includes('#');
+  }
+  document.querySelectorAll('[data-send]').forEach(c => { body[c.dataset.send] = c.checked; });
+  const toFile = document.querySelector('input[name="repl-mode"]:checked').value === 'file';
+  if (toFile) {
+    body.file = document.getElementById('repl-file').value.trim();
+    return ['send-to-file', body];
+  }
+  body.target = document.getElementById('repl-target').value.trim();
+  body.no_mount = document.getElementById('repl-nomount').checked;
+  body.resumable = document.getElementById('repl-resumable').checked;
+  body.exclude_mountpoint = document.getElementById('repl-nomp').checked;
+  body.force = document.getElementById('repl-force')?.checked || false;
+  return ['replicate', body];
+}
+
+function bindReplication() {
+  document.getElementById('repl-snap').addEventListener('change', fillReplBase);
+  fillReplBase();
+  document.querySelectorAll('input[name="repl-mode"]').forEach(r => r.addEventListener('change', () => {
+    const toFile = document.querySelector('input[name="repl-mode"]:checked').value === 'file';
+    document.getElementById('repl-target-group').hidden = toFile;
+    document.getElementById('repl-recv-group').hidden = toFile;
+    document.getElementById('repl-file-group').hidden = !toFile;
+  }));
+  document.getElementById('repl-estimate').addEventListener('click', async () => {
+    const out = document.getElementById('repl-estimate-out');
+    out.textContent = 'Estimating…';
+    try {
+      const [, body] = replicationRequest();
+      const res = await apiJSON('POST', '/api/storage/replication/estimate', body);
+      out.textContent = res.size ? `About ${humanSize(res.size)}` : 'Unknown size';
+    } catch (e) { out.textContent = e.message; }
+  });
+  document.getElementById('repl-start').addEventListener('click', async () => {
+    const [kind, body] = replicationRequest();
+    if (body.force && !await confirm('Roll back the target', `With -F, <span class="mono">${esc(body.target)}</span> loses the snapshots and changes the source does not have.`, 'Start')) return;
+    try {
+      await apiJSON('POST', `/api/storage/replication/${kind}`, body);
+      toast('Transfer started.', 'ok');
+      refreshTransfers();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.getElementById('repl-receive').addEventListener('click', async () => {
+    const body = { file: document.getElementById('repl-in-file').value.trim(),
+                   target: document.getElementById('repl-in-target').value.trim() };
+    try {
+      await apiJSON('POST', '/api/storage/replication/receive-from-file', body);
+      toast('Receive started.', 'ok');
+      refreshTransfers();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+async function refreshTransfers() {
+  stopReplicationPoll();
+  if (_activeTab !== 'replication') return;
+  const box = document.getElementById('repl-jobs');
+  if (!box) return;
+  let jobs = [], resumable = [];
+  try {
+    [jobs, resumable] = await Promise.all([
+      apiJSON('GET', '/api/storage/replication/jobs').then(r => r.jobs),
+      apiJSON('GET', '/api/storage/replication/resumable').then(r => r.datasets).catch(() => []),
+    ]);
+  } catch (e) { box.innerHTML = errorState(e.message); return; }
+  if (_activeTab !== 'replication') return;
+  const badge = { running: 'info', done: 'ok', failed: 'err', cancelled: 'warn' };
+  box.innerHTML = jobs.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>From</th><th>To</th><th>State</th><th>Progress</th><th></th></tr></thead>
+    <tbody>${jobs.map(j => {
+      const pct = j.total ? Math.min(100, Math.round(100 * j.done / j.total)) : null;
+      const prev = _replRate[j.id];
+      const now = Date.now() / 1000;
+      const rate = prev && j.state === 'running' && now > prev.t ? (j.done - prev.done) / (now - prev.t) : null;
+      _replRate[j.id] = { t: now, done: j.done };
+      return `<tr>
+        <td class="mono">${esc(j.source)}${j.from ? `<br><span class="text-muted">since ${esc(j.from)}</span>` : ''}</td>
+        <td class="mono">${esc(j.target)}</td>
+        <td><span class="badge badge-${badge[j.state] || 'muted'}">${esc(j.state)}</span>
+          ${j.error ? `<div class="text-err mt-1" style="max-width:28rem;white-space:pre-wrap">${esc(j.error.split('Stderr:').pop().trim())}</div>` : ''}</td>
+        <td style="min-width:12rem">${pct !== null ? `<div class="progress-wrap"><div class="progress-bar ${j.state === 'failed' ? 'err' : 'ok'}" style="width:${pct}%"></div></div>` : ''}
+          <span class="text-muted">${j.done ? humanSize(j.done) : ''}${j.total ? ' / ' + humanSize(j.total) : ''}${rate > 0 ? ` · ${humanSize(rate)}/s` : ''}</span></td>
+        <td>${j.state === 'running' ? `<button class="btn btn-ghost btn-sm" data-cancel-job="${j.id}">Cancel</button>` : ''}</td>
+      </tr>`; }).join('')}</tbody></table></div>` : '<p class="text-muted">No transfers since the WebUI started.</p>';
+  box.querySelectorAll('[data-cancel-job]').forEach(b => b.addEventListener('click', async () => {
+    if (!await confirm('Cancel transfer', 'Stop this transfer? A resumable one can be resumed later from where it stopped.', 'Cancel transfer')) return;
+    try { await apiJSON('POST', `/api/storage/replication/jobs/${b.dataset.cancelJob}/cancel`, {}); }
+    catch (e) { toast(e.message, 'err'); }
+    refreshTransfers();
+  }));
+
+  const card = document.getElementById('repl-resumable-card');
+  card.hidden = !resumable.length;
+  document.getElementById('repl-resumable-list').innerHTML = resumable.map(d => `
+    <div class="device-row"><span class="mono">${esc(d)}</span>
+      <button class="btn btn-secondary btn-sm" data-resume="${esc(d)}">Resume</button>
+      <button class="btn btn-ghost btn-sm" data-discard="${esc(d)}">Discard</button></div>`).join('');
+  card.querySelectorAll('[data-resume]').forEach(b => b.addEventListener('click', async () => {
+    try { await apiJSON('POST', '/api/storage/replication/resume', { target: b.dataset.resume }); toast('Resumed.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+    refreshTransfers();
+  }));
+  card.querySelectorAll('[data-discard]').forEach(b => b.addEventListener('click', async () => {
+    if (!await confirm('Discard partial receive', `Throw away what was received into <span class="mono">${esc(b.dataset.discard)}</span> so far?`, 'Discard')) return;
+    try { await apiJSON('POST', '/api/storage/replication/abort', { target: b.dataset.discard }); toast('Discarded.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+    refreshTransfers();
+  }));
+
+  if (jobs.some(j => j.state === 'running')) _replTimer = setTimeout(refreshTransfers, 2000);
 }
