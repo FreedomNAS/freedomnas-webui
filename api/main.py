@@ -250,6 +250,11 @@ async def page_updates(request: Request):
     return templates.TemplateResponse(request, "updates.html")
 
 
+@app.get("/services/")
+async def page_services(request: Request):
+    return templates.TemplateResponse(request, "services.html")
+
+
 @app.get("/system/")
 async def page_system(request: Request):
     return templates.TemplateResponse(request, "system.html")

@@ -266,6 +266,7 @@ const DOCS_PAGES = {
   '/network/':   'user-guide/network/',
   '/users/':     'user-guide/users/',
   '/updates/':   'user-guide/updates/',
+  '/services/':  'user-guide/services/',
   '/system/':    'user-guide/system/',
   '/setup/':     'getting-started/first-run/',
 };
