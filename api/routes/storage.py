@@ -37,6 +37,15 @@ GET  /pool-properties     — the pool properties this edition supports
 GET  /pools/{pool}/properties — what the pool has them set to
 PUT  /pools/{pool}/properties — change them
 POST /pools/{pool}/upgrade|checkpoint|reguid — feature upgrade, checkpoint, new GUID
+POST /volumes             — create a volume (zvol)
+POST /datasets/{name}/mount|unmount|promote — mount, unmount, promote a clone
+POST /datasets/{name}/inherit — reset a property to the inherited value
+GET|PUT /datasets/{name}/user-properties — properties with a colon in the name
+GET|PUT /datasets/{name}/quotas — per-user and per-group quotas
+DELETE /snapshots/{snap}  — destroy a snapshot
+POST /snapshots/{snap}/rollback|clone|rename|hold|release|bookmark
+GET  /snapshots/{snap}/holds|diff — holds, and what changed since
+GET  /bookmarks, DELETE /bookmarks/{bookmark}
 """
 
 import asyncio
@@ -55,6 +64,7 @@ from freedomnas import datasets as zfs_datasets
 from freedomnas import pool_import
 from freedomnas import pool_removal
 from freedomnas import shadow
+from freedomnas import snapshots as zfs_snapshots
 from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
@@ -141,14 +151,19 @@ async def list_datasets(username: str = Depends(authenticate)):
     for line in stdout.splitlines():
         parts = line.split("\t")
         if len(parts) >= 5:
-            datasets.append({
+            entry = {
                 "name": parts[0],
                 "used": _bytes(parts[1]),
                 "avail": _bytes(parts[2]),
                 "refer": _bytes(parts[3]),
                 "mountpoint": parts[4],
                 "protected": zfs_datasets.subtree_reason(rows, parts[0], system_pool),
-            })
+            }
+            if len(parts) >= 8:
+                entry["type"] = parts[5]
+                entry["mounted"] = parts[6] == "yes"
+                entry["origin"] = "" if parts[7] == "-" else parts[7]
+            datasets.append(entry)
     return {"datasets": datasets}
 
 
@@ -316,12 +331,7 @@ async def list_snapshots(username: str = Depends(authenticate)):
         stdout, _ = engine.execute("zfs", "snapshot_list")
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    snapshots = []
-    for line in stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 3:
-            snapshots.append({"name": parts[0], "creation": parts[1], "used": parts[2]})
-    return {"snapshots": snapshots}
+    return {"snapshots": zfs_snapshots.parse_list(stdout)}
 
 
 @router.post("/snapshots")
@@ -330,10 +340,15 @@ async def create_snapshot(body: dict, username: str = Depends(authenticate)):
     snap_name = body.get("snap_name", "").strip()
     if not dataset or not snap_name:
         return JSONResponse(status_code=422, content={"detail": "dataset and snap_name are required"})
+    try:
+        zfs_snapshots.split_name(f"{dataset}@{snap_name}")
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
     engine = get_engine()
     config = get_config()
+    action = "snapshot_create_recursive" if body.get("recursive") else "snapshot_create"
     try:
-        engine.execute("zfs", "snapshot_create", dataset=dataset, snap_name=snap_name)
+        engine.execute("zfs", action, dataset=dataset, snap_name=snap_name)
         config.add_root_snapshot(f"{dataset}@{snap_name}")
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
@@ -1280,3 +1295,251 @@ async def set_pool_properties(pool_name: str, body: dict, username: str = Depend
             applied.append(name)
     return JSONResponse(status_code=200 if not failed else 207,
                         content={"pool": pool_name, "applied": applied, "failed": failed})
+
+
+# ---------------------------------------------------------------------------
+# Volumes and dataset administration
+# ---------------------------------------------------------------------------
+
+def _problem(status: int, detail: str):
+    return JSONResponse(status_code=status, content={"detail": detail})
+
+
+@router.post("/volumes")
+async def create_volume(body: dict, username: str = Depends(authenticate)):
+    wanted = {str(k): str(v).strip() for k, v in (body.get("properties") or {}).items()
+              if str(v).strip() != ""}
+    catalogue = _catalogue()
+    errors = [e for e in (_validate(catalogue, k, v, creating=True) for k, v in wanted.items()) if e]
+    if errors:
+        return _problem(422, "; ".join(errors))
+    engine = get_engine()
+    try:
+        created = await asyncio.to_thread(
+            zfs_datasets.create_volume, engine, str(body.get("parent") or "").strip(),
+            str(body.get("name") or "").strip(), str(body.get("size") or "").strip(),
+            bool(body.get("sparse")), str(body.get("blocksize") or "").strip(), wanted)
+    except zfs_datasets.DatasetProblem as exc:
+        return _problem(422, str(exc))
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return _problem(500, str(exc))
+    return {"volume": created}
+
+
+@router.post("/datasets/{dataset:path}/mount")
+async def mount_dataset(dataset: str, username: str = Depends(authenticate)):
+    _, err = await _run("mount_dataset", dataset=dataset)
+    return err or {"dataset": dataset, "mounted": True}
+
+
+@router.post("/datasets/{dataset:path}/unmount")
+async def unmount_dataset(dataset: str, username: str = Depends(authenticate)):
+    reason = await asyncio.to_thread(zfs_datasets.change_problem, get_engine(), dataset)
+    if reason:
+        return _problem(422, f"{dataset} stays mounted: {reason}")
+    _, err = await _run("unmount_dataset", dataset=dataset)
+    return err or {"dataset": dataset, "mounted": False}
+
+
+@router.post("/datasets/{dataset:path}/promote")
+async def promote_dataset(dataset: str, username: str = Depends(authenticate)):
+    reason = await asyncio.to_thread(zfs_datasets.change_problem, get_engine(), dataset)
+    if reason:
+        return _problem(422, f"{dataset} cannot be promoted here: {reason}")
+    _, err = await _run("dataset_promote", dataset=dataset)
+    return err or {"dataset": dataset, "promoted": True}
+
+
+_USER_PROP = re.compile(r"^[a-z0-9_.+-]*:[a-z0-9_.:+-]*$")
+
+
+@router.post("/datasets/{dataset:path}/inherit")
+async def inherit_property(dataset: str, body: dict, username: str = Depends(authenticate)):
+    prop = str(body.get("property") or "")
+    spec = _catalogue().get(prop)
+    if not (_USER_PROP.match(prop) or (spec and not spec.get("create_only"))):
+        return _problem(422, f"{prop!r} cannot be reset here")
+    _, err = await _run("dataset_inherit", property=prop, dataset=dataset)
+    return err or {"dataset": dataset, "inherited": prop}
+
+
+@router.get("/datasets/{dataset:path}/user-properties")
+async def get_user_properties(dataset: str, username: str = Depends(authenticate)):
+    stdout, err = await _run("dataset_get", dataset=dataset)
+    if err:
+        return err
+    found = {}
+    for line in stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and ":" in parts[0]:
+            found[parts[0]] = {"value": parts[1], "source": parts[2]}
+    return {"dataset": dataset, "properties": found}
+
+
+@router.put("/datasets/{dataset:path}/user-properties")
+async def set_user_properties(dataset: str, body: dict, username: str = Depends(authenticate)):
+    if not body:
+        return _problem(422, "Nothing to set")
+    for name, value in body.items():
+        if not _USER_PROP.match(str(name)) or len(str(name)) > 256:
+            return _problem(422, f"{name!r} is not a user property: lowercase, with a colon, e.g. com.example:note")
+        if not str(value).isprintable() or len(str(value)) > 8192:
+            return _problem(422, f"The value of {name} must be printable text")
+    applied = []
+    for name, value in body.items():
+        _, err = await _run("dataset_set", dataset=dataset, property=name, value=str(value))
+        if err:
+            return err
+        applied.append(name)
+    return {"dataset": dataset, "applied": applied}
+
+
+@router.get("/datasets/{dataset:path}/quotas")
+async def get_quotas(dataset: str, kind: str = "user", username: str = Depends(authenticate)):
+    if kind not in zfs_datasets.QUOTA_KINDS:
+        return _problem(422, "kind is user or group")
+    stdout, err = await _run("userspace" if kind == "user" else "groupspace", dataset=dataset)
+    if err:
+        return err
+    return {"dataset": dataset, "kind": kind, "entries": zfs_datasets.parse_space(stdout)}
+
+
+@router.put("/datasets/{dataset:path}/quotas")
+async def set_quota(dataset: str, body: dict, username: str = Depends(authenticate)):
+    kind = str(body.get("kind") or "user")
+    who = str(body.get("name") or "").strip()
+    changes = []
+    try:
+        if "quota" in body:
+            changes.append((zfs_datasets.quota_property(kind, who), str(body["quota"]).strip()))
+        if "objquota" in body:
+            changes.append((zfs_datasets.quota_property(kind, who, objects=True),
+                            str(body["objquota"]).strip()))
+    except zfs_datasets.DatasetProblem as exc:
+        return _problem(422, str(exc))
+    if not changes:
+        return _problem(422, "Give quota and/or objquota")
+    for prop, value in changes:
+        if not (_SIZE.match(value) or (prop.startswith(kind + "obj") and value.isdigit())):
+            return _problem(422, f"{prop} wants a size such as 50G, or 'none' — not {value!r}")
+    for prop, value in changes:
+        _, err = await _run("dataset_set", dataset=dataset, property=prop, value=value)
+        if err:
+            return err
+    return {"dataset": dataset, "kind": kind, "name": who, "set": [p for p, _ in changes]}
+
+
+# ---------------------------------------------------------------------------
+# Snapshots: destroy, roll back, clone, rename, holds, changes, bookmarks
+# ---------------------------------------------------------------------------
+
+def _snapshot(name: str):
+    try:
+        return zfs_snapshots.split_name(name), None
+    except ValueError as exc:
+        return (None, None), _problem(422, str(exc))
+
+
+@router.get("/snapshots/{snapshot:path}/holds")
+async def snapshot_holds(snapshot: str, username: str = Depends(authenticate)):
+    _, bad = _snapshot(snapshot)
+    if bad:
+        return bad
+    stdout, err = await _run("snapshot_holds", snapshot=snapshot)
+    return err or {"snapshot": snapshot, "holds": zfs_snapshots.parse_holds(stdout)}
+
+
+@router.get("/snapshots/{snapshot:path}/diff")
+async def snapshot_diff(snapshot: str, to: str = "", username: str = Depends(authenticate)):
+    (dataset, _), bad = _snapshot(snapshot)
+    if bad:
+        return bad
+    if to:
+        (other, _), bad = _snapshot(to)
+        if bad:
+            return bad
+        if other != dataset:
+            return _problem(422, "Compare with a later snapshot of the same dataset")
+        stdout, err = await _run("snapshot_diff_to", timeout=300, snapshot=snapshot, target=to)
+    else:
+        stdout, err = await _run("snapshot_diff", timeout=300, snapshot=snapshot)
+    return err or {"snapshot": snapshot, "to": to or dataset, **zfs_snapshots.parse_diff(stdout)}
+
+
+@router.post("/snapshots/{snapshot:path}/{task}")
+async def snapshot_task(snapshot: str, task: str, body: dict,
+                        username: str = Depends(authenticate)):
+    (dataset, snap), bad = _snapshot(snapshot)
+    if bad:
+        return bad
+    engine, config = get_engine(), get_config()
+    if task == "rollback":
+        reason = await asyncio.to_thread(zfs_datasets.change_problem, engine, dataset)
+        if reason:
+            return _problem(422, f"{dataset} cannot be rolled back here: {reason}")
+        action = "snapshot_rollback_recursive" if body.get("destroy_newer") else "snapshot_rollback"
+        _, err = await _run(action, timeout=300, dataset=dataset, snap_name=snap)
+        return err or {"snapshot": snapshot, "rolled_back": dataset}
+    if task == "clone":
+        target = str(body.get("target") or "").strip()
+        problem = await asyncio.to_thread(zfs_datasets.clone_problem, engine, dataset, target)
+        if problem:
+            return _problem(422, problem)
+        _, err = await _run("snapshot_clone", timeout=120, snapshot=snapshot, clone_name=target)
+        return err or {"snapshot": snapshot, "clone": target}
+    if task == "rename":
+        try:
+            new = zfs_snapshots.check_part(str(body.get("new_name") or "").strip())
+        except ValueError as exc:
+            return _problem(422, str(exc))
+        _, err = await _run("snapshot_rename", snapshot=snapshot, new_snapshot=f"{dataset}@{new}")
+        if err:
+            return err
+        config.rename_root_snapshot(snapshot, f"{dataset}@{new}")
+        return {"snapshot": f"{dataset}@{new}", "was": snapshot}
+    if task in ("hold", "release"):
+        try:
+            tag = zfs_snapshots.check_tag(str(body.get("tag") or "").strip())
+        except ValueError as exc:
+            return _problem(422, str(exc))
+        _, err = await _run(f"snapshot_{task}", tag=tag, snapshot=snapshot)
+        return err or {"snapshot": snapshot, task: tag}
+    if task == "bookmark":
+        try:
+            mark = zfs_snapshots.check_part(str(body.get("name") or "").strip(), "bookmark")
+        except ValueError as exc:
+            return _problem(422, str(exc))
+        _, err = await _run("bookmark_create", snapshot=snapshot, bookmark=f"{dataset}#{mark}")
+        return err or {"snapshot": snapshot, "bookmark": f"{dataset}#{mark}"}
+    return _problem(404, f"Unknown snapshot task: {task}")
+
+
+@router.delete("/snapshots/{snapshot:path}")
+async def destroy_snapshot(snapshot: str, recursive: bool = False,
+                           username: str = Depends(authenticate)):
+    (dataset, snap), bad = _snapshot(snapshot)
+    if bad:
+        return bad
+    action = "snapshot_destroy_recursive" if recursive else "snapshot_destroy"
+    _, err = await _run(action, timeout=300, dataset=dataset, snap_name=snap)
+    if err:
+        return err
+    get_config().remove_root_snapshot(snapshot, recursive)
+    return {"destroyed": snapshot, "recursive": recursive}
+
+
+@router.get("/bookmarks")
+async def list_bookmarks(username: str = Depends(authenticate)):
+    stdout, err = await _run("bookmark_list")
+    return err or {"bookmarks": zfs_snapshots.parse_bookmarks(stdout)}
+
+
+@router.delete("/bookmarks/{bookmark:path}")
+async def destroy_bookmark(bookmark: str, username: str = Depends(authenticate)):
+    dataset, _, mark = bookmark.partition("#")
+    try:
+        zfs_snapshots.split_name(f"{dataset}@{mark}")
+    except ValueError:
+        return _problem(422, f"{bookmark!r} is not a bookmark name (dataset#name)")
+    _, err = await _run("bookmark_destroy", bookmark=bookmark)
+    return err or {"destroyed": bookmark}

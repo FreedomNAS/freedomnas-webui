@@ -53,7 +53,8 @@ def test_datasets_are_parsed_and_short_lines_skipped(client, engine):
 def test_snapshots_are_listed(client, engine):
     engine.outputs[("zfs", "snapshot_list")] = "tank@a\tMon Sep 22 2026\t0B\n"
     r = client.get("/api/storage/snapshots")
-    assert r.body == {"snapshots": [{"name": "tank@a", "creation": "Mon Sep 22 2026", "used": "0B"}]}
+    assert r.body == {"snapshots": [{"name": "tank@a", "dataset": "tank", "snapshot": "a",
+                                     "creation": "Mon Sep 22 2026", "used": "0B"}]}
 
 
 def test_a_failing_listing_is_a_500(client, engine):
@@ -76,10 +77,10 @@ def test_a_snapshot_is_taken_and_recorded(client, engine, config):
     assert any(s.get("name") == "tank/home@before" for s in config.get_root_snapshots())
 
 
-def test_a_hostile_snapshot_name_stays_part_of_one_argument(client, engine):
-    client.post("/api/storage/snapshots", {"dataset": "tank", "snap_name": "x -r other"})
-    [call] = engine.called("zfs", "snapshot_create")
-    assert call.argv == ["zfs", "snapshot", "tank@x -r other"]
+def test_a_hostile_snapshot_name_is_refused(client, engine):
+    r = client.post("/api/storage/snapshots", {"dataset": "tank", "snap_name": "x -r other"})
+    assert r.status == 422
+    assert not engine.called("zfs", "snapshot_create")
 
 
 @pytest.mark.parametrize("body", [{"dataset": "tank"}, {"snap_name": "a"}, {}])

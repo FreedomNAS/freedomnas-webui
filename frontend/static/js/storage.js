@@ -69,7 +69,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!dataset || !name) { toast('Dataset and snapshot name are required.', 'warn'); return; }
     setLoading(btn, true, 'Creating…');
     try {
-      await apiJSON('POST', '/api/storage/snapshots', { dataset, snap_name: name });
+      const recursive = document.getElementById('f-snap-recursive')?.checked || false;
+      await apiJSON('POST', '/api/storage/snapshots', { dataset, snap_name: name, recursive });
       toast('Snapshot created.', 'ok');
       closeModal('modal-snapshot');
       document.getElementById('form-snapshot').reset();
@@ -132,7 +133,10 @@ async function loadDatasets() {
     _datasetRows = d.datasets || [];
     const header = `<div class="section-header">
         <span class="section-title">Datasets</span>
-        <button class="btn btn-primary btn-sm" id="btn-create-dataset">Create Dataset</button>
+        <span>
+          <button class="btn btn-secondary btn-sm advanced-only" id="btn-create-volume">Create Volume</button>
+          <button class="btn btn-primary btn-sm" id="btn-create-dataset">Create Dataset</button>
+        </span>
       </div>`;
     if (!_datasetRows.length) {
       el.innerHTML = header + emptyState('No datasets found.');
@@ -155,10 +159,11 @@ async function loadDatasets() {
                 <td class="mono text-muted">${esc(r.mountpoint)}</td>
                 <td class="advanced-only" style="white-space: nowrap">${r.protected ? '' : `
                   <button class="btn btn-secondary btn-sm" data-props="${esc(r.name)}">Properties</button>
-                  <button class="btn btn-secondary btn-sm" data-move="${esc(r.name)}">Mountpoint</button>
+                  ${r.type === 'volume' ? '' : `<button class="btn btn-secondary btn-sm" data-move="${esc(r.name)}">Mountpoint</button>`}
                   ${r.name.includes('/') ? `
                   <button class="btn btn-secondary btn-sm" data-rename="${esc(r.name)}">Rename</button>
-                  <button class="btn btn-danger btn-sm" data-destroy="${esc(r.name)}">Delete</button>` : ''}`}
+                  <button class="btn btn-danger btn-sm" data-destroy="${esc(r.name)}">Delete</button>` : ''}
+                  ${datasetMenu(r)}`}
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -166,6 +171,12 @@ async function loadDatasets() {
       </div>`;
     }
     el.querySelector('#btn-create-dataset').addEventListener('click', openCreateDataset);
+    el.querySelector('#btn-create-volume')?.addEventListener('click', openCreateVolume);
+    el.querySelectorAll('select[data-ds-menu]').forEach(sel => sel.addEventListener('change', () => {
+      const action = sel.value;
+      sel.value = '';
+      if (action) datasetAction(sel.dataset.dsMenu, action);
+    }));
     el.querySelectorAll('[data-props]').forEach(b =>
       b.addEventListener('click', () => openProperties(b.dataset.props)));
     el.querySelectorAll('[data-move]').forEach(b =>
@@ -202,14 +213,21 @@ async function openProperties(dataset) {
       'GET', `/api/storage/datasets/${dataset}/properties`)).properties;
     body.innerHTML = Object.entries(propCatalogue)
       .filter(([, spec]) => !spec.create_only)
-      .map(([name, spec]) => propertyRow(name, spec, current[name]))
+      .map(([name, spec]) => propertyRow(name, spec, current[name], dataset))
       .join('');
+    body.querySelectorAll('[data-reset]').forEach(b => b.addEventListener('click', async () => {
+      try {
+        await apiJSON('POST', `/api/storage/datasets/${dataset}/inherit`, { property: b.dataset.reset });
+        toast(`${b.dataset.reset} is inherited again.`, 'ok');
+        openProperties(dataset);
+      } catch (e) { toast(e.message, 'err'); }
+    }));
   } catch (e) {
     body.innerHTML = errorState(e.message);
   }
 }
 
-function propertyRow(name, spec, cur) {
+function propertyRow(name, spec, cur, resetFor = '') {
   const value = cur ? cur.value : (spec.default ?? '');
   const gate = spec.level === 'expert' ? ' expert-only'
              : spec.level === 'advanced' ? ' advanced-only' : '';
@@ -222,39 +240,113 @@ function propertyRow(name, spec, cur) {
        </select>`
     : `<input class="input" type="text" data-prop="${esc(name)}"
               data-was="${esc(value)}" value="${esc(value)}">`;
+  const reset = resetFor && cur && cur.source === 'local'
+    ? ` <button type="button" class="btn btn-ghost btn-sm" data-reset="${esc(name)}" title="Use the inherited value again">Reset</button>` : '';
   return `
     <div class="form-group${gate}">
-      <label class="form-label mono">${esc(name)}${inherited}</label>
+      <label class="form-label mono">${esc(name)}${inherited}${reset}</label>
       ${control}
       <span class="form-hint">${esc(spec.help || '')}</span>
     </div>`;
 }
+
+let _snapRows = [];
+let _snapFilter = '';
 
 async function loadSnapshots() {
   const el = document.getElementById('panel-snapshots');
   el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
   try {
     const d = await apiJSON('GET', '/api/storage/snapshots');
-    if (!d.snapshots?.length) { el.innerHTML = emptyState('No snapshots found.'); return; }
-    el.innerHTML = `
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Snapshot</th><th>Created</th><th>Used</th>
-          </tr></thead>
-          <tbody>
-            ${d.snapshots.map(r => `
-              <tr>
-                <td class="mono">${esc(r.name)}</td>
-                <td class="muted">${esc(r.creation)}</td>
-                <td>${esc(r.used)}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>`;
+    _snapRows = d.snapshots || [];
+    let marks = [];
+    if (uiLevel() === 'expert') {
+      try { marks = (await apiJSON('GET', '/api/storage/bookmarks')).bookmarks; } catch { marks = []; }
+    }
+    renderSnapshots(el, marks);
   } catch (e) {
     el.innerHTML = errorState(e.message);
   }
+}
+
+function snapTime(value) {
+  return typeof value === 'number' ? new Date(value * 1000).toLocaleString() : esc(value);
+}
+
+function renderSnapshots(el, marks) {
+  const q = _snapFilter.toLowerCase();
+  const rows = _snapRows.filter(r => !q || r.name.toLowerCase().includes(q));
+  const expert = uiLevel() === 'expert';
+  el.innerHTML = `
+    <div class="section-header">
+      <input class="input" id="snap-filter" type="search" placeholder="Filter by dataset or name"
+             value="${esc(_snapFilter)}" style="max-width:22rem">
+      <button class="btn btn-danger btn-sm" id="snap-destroy-selected" disabled>Destroy selected</button>
+    </div>
+    ${rows.length ? `
+    <div class="table-wrap"><table>
+      <thead><tr><th><input type="checkbox" id="snap-all"></th><th>Snapshot</th><th>Created</th>
+        <th>Used</th><th>Referenced</th><th>Holds</th><th>Clones</th><th></th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr>
+          <td><input type="checkbox" data-snap-pick="${esc(r.name)}"></td>
+          <td class="mono">${esc(r.name)}</td>
+          <td class="text-muted">${snapTime(r.creation)}</td>
+          <td>${r.used === 0 ? '0 B' : poolSize(r.used)}</td>
+          <td>${poolSize(r.referenced)}</td>
+          <td>${r.holds ? `<span class="badge badge-info">${r.holds}</span>` : ''}</td>
+          <td class="mono text-muted">${esc((r.clones || []).join(', '))}</td>
+          <td><select class="select" data-snap-menu="${esc(r.name)}" style="width:auto">
+            <option value="">Actions…</option>
+            <option value="rollback">Roll back…</option>
+            <option value="clone">Clone…</option>
+            <option value="rename">Rename…</option>
+            <option value="holds">Holds…</option>
+            <option value="diff">Changes since…</option>
+            ${expert ? '<option value="bookmark">Bookmark…</option>' : ''}
+            <option value="destroy">Destroy…</option>
+          </select></td>
+        </tr>`).join('')}</tbody>
+    </table></div>` : emptyState(_snapRows.length ? 'No snapshot matches.' : 'No snapshots found.')}
+    ${expert ? `
+    <div class="section-header mt-6"><span class="section-title">Bookmarks</span></div>
+    ${marks.length ? `<div class="table-wrap"><table>
+      <thead><tr><th>Bookmark</th><th>Created</th><th></th></tr></thead>
+      <tbody>${marks.map(m => `<tr><td class="mono">${esc(m.name)}</td><td class="text-muted">${snapTime(m.creation)}</td>
+        <td><button class="btn btn-ghost btn-sm" data-bookmark-del="${esc(m.name)}">Delete</button></td></tr>`).join('')}</tbody>
+    </table></div>` : '<p class="text-muted">No bookmarks. A bookmark keeps the point of a snapshot after it is destroyed, as the base of an incremental send.</p>'}` : ''}`;
+
+  const filter = el.querySelector('#snap-filter');
+  filter.addEventListener('input', () => {
+    _snapFilter = filter.value;
+    renderSnapshots(el, marks);
+    const again = el.querySelector('#snap-filter');
+    again.focus();
+    again.setSelectionRange(again.value.length, again.value.length);
+  });
+  const picks = () => [...el.querySelectorAll('[data-snap-pick]:checked')].map(c => c.dataset.snapPick);
+  const destroyBtn = el.querySelector('#snap-destroy-selected');
+  el.querySelectorAll('[data-snap-pick]').forEach(c => c.addEventListener('change', () => {
+    destroyBtn.disabled = !picks().length;
+  }));
+  el.querySelector('#snap-all')?.addEventListener('change', (e) => {
+    el.querySelectorAll('[data-snap-pick]').forEach(c => { c.checked = e.target.checked; });
+    destroyBtn.disabled = !picks().length;
+  });
+  destroyBtn.addEventListener('click', () => destroySnapshots(picks()));
+  el.querySelectorAll('select[data-snap-menu]').forEach(sel => sel.addEventListener('change', () => {
+    const action = sel.value;
+    sel.value = '';
+    if (action) snapshotAction(sel.dataset.snapMenu, action);
+  }));
+  el.querySelectorAll('[data-bookmark-del]').forEach(b => b.addEventListener('click', async () => {
+    if (!await confirm('Delete bookmark', `Delete <span class="mono">${esc(b.dataset.bookmarkDel)}</span>? It can no longer be the base of an incremental send.`, 'Delete')) return;
+    try {
+      await apiJSON('DELETE', `/api/storage/bookmarks/${encodeURIComponent(b.dataset.bookmarkDel)}`);
+      toast('Bookmark deleted.', 'ok');
+      loadSnapshots();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
 }
 
 const DISK_HEALTH = {
@@ -1512,4 +1604,289 @@ async function openPoolProperties(pool) {
       else { toast(`Applied: ${res.applied.join(', ')}`, 'ok'); closeModal('modal-dataset'); }
     });
   } catch (e) { toast(e.message, 'err'); }
+}
+
+
+// ── Dataset administration (Advanced and Expert) ─────────────────────────────
+
+function apiPath(name) {
+  return name.split('/').map(encodeURIComponent).join('/');
+}
+
+function datasetMenu(r) {
+  const expert = uiLevel() === 'expert';
+  const fs = (r.type || 'filesystem') === 'filesystem';
+  const options = [];
+  if (fs && r.mountpoint !== 'none' && r.mountpoint !== 'legacy') {
+    options.push(r.mounted === false ? ['mount', 'Mount'] : ['unmount', 'Unmount']);
+  }
+  if (fs) options.push(['quotas', 'User and group quotas…']);
+  options.push(['snapshots', 'Show snapshots']);
+  if (expert && r.origin) options.push(['promote', `Promote (clone of ${r.origin})`]);
+  if (expert) options.push(['userprops', 'User properties…']);
+  return `<select class="select" data-ds-menu="${esc(r.name)}" style="width:auto">
+    <option value="">More…</option>
+    ${options.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}
+  </select>`;
+}
+
+async function datasetAction(name, action) {
+  if (action === 'snapshots') { _snapFilter = name; switchTab('snapshots'); return; }
+  if (action === 'quotas') { openQuotas(name); return; }
+  if (action === 'userprops') { openUserProperties(name); return; }
+  if (action === 'unmount' && !await confirm('Unmount', `Unmount <span class="mono">${esc(name)}</span>? Shares on it stop working until it is mounted again.`, 'Unmount')) return;
+  if (action === 'promote' && !await confirm('Promote clone', `<span class="mono">${esc(name)}</span> stops depending on its origin snapshot; the origin becomes a clone of it instead.`, 'Promote')) return;
+  try {
+    await apiJSON('POST', `/api/storage/datasets/${apiPath(name)}/${action}`, {});
+    toast('Done.', 'ok');
+    loadDatasets();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openCreateVolume() {
+  const parents = _datasetRows.filter(r => !r.protected && (r.type || 'filesystem') === 'filesystem');
+  if (!parents.length) { toast('Create a pool first.', 'err'); return; }
+  datasetDialog('Create Volume', 'Create', `
+    <div class="form-group"><label class="form-label" for="vol-parent">Inside</label>
+      <select id="vol-parent" class="select">${parents.map(r => `<option>${esc(r.name)}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label" for="vol-name">Name</label>
+      <input id="vol-name" class="input" type="text" autocomplete="off" placeholder="vm-disk"></div>
+    <div class="form-group"><label class="form-label" for="vol-size">Size</label>
+      <input id="vol-size" class="input" type="text" autocomplete="off" placeholder="40G">
+      <span class="form-hint">A number with K, M, G or T. The volume appears as a block device, e.g. for virtual machines or iSCSI.</span></div>
+    <div class="form-group"><label class="form-label"><input type="checkbox" id="vol-sparse">
+      Thin provisioned — space is taken only when written</label></div>
+    <div class="form-group"><label class="form-label" for="vol-block">Block size</label>
+      <select id="vol-block" class="select"><option value="">Default (16K)</option>
+        ${['4K', '8K', '16K', '32K', '64K', '128K'].map(b => `<option>${b}</option>`).join('')}</select></div>`,
+    async () => {
+      const body = {
+        parent: document.getElementById('vol-parent').value,
+        name: document.getElementById('vol-name').value.trim(),
+        size: document.getElementById('vol-size').value.trim(),
+        sparse: document.getElementById('vol-sparse').checked,
+        blocksize: document.getElementById('vol-block').value,
+      };
+      const res = await apiJSON('POST', '/api/storage/volumes', body);
+      toast(`Volume ${res.volume} created.`, 'ok');
+      closeModal('modal-dataset');
+      loadDatasets();
+    });
+}
+
+async function openQuotas(name) {
+  datasetDialog(`Quotas on ${name}`, 'Set quota', `
+    <div class="form-group"><label class="form-label" for="quota-kind">For</label>
+      <select id="quota-kind" class="select"><option value="user">Users</option><option value="group">Groups</option></select></div>
+    <div id="quota-list" class="mb-4"></div>
+    <div class="form-group"><label class="form-label" for="quota-name">Name</label>
+      <input id="quota-name" class="input" type="text" autocomplete="off" placeholder="sarah"></div>
+    <div class="form-group"><label class="form-label" for="quota-size">Space limit</label>
+      <input id="quota-size" class="input" type="text" autocomplete="off" placeholder="50G or none"></div>
+    <div class="form-group expert-only"><label class="form-label" for="quota-objects">File limit (number of files, optional)</label>
+      <input id="quota-objects" class="input" type="text" autocomplete="off" placeholder="none"></div>`,
+    async () => {
+      const body = { kind: document.getElementById('quota-kind').value,
+                     name: document.getElementById('quota-name').value.trim() };
+      const size = document.getElementById('quota-size').value.trim();
+      const objects = document.getElementById('quota-objects').value.trim();
+      if (size) body.quota = size;
+      if (objects) body.objquota = objects;
+      await apiJSON('PUT', `/api/storage/datasets/${apiPath(name)}/quotas`, body);
+      toast('Quota set.', 'ok');
+      load();
+    });
+  const load = async () => {
+    const kind = document.getElementById('quota-kind').value;
+    const box = document.getElementById('quota-list');
+    box.innerHTML = '<div class="spinner"></div>';
+    try {
+      const res = await apiJSON('GET', `/api/storage/datasets/${apiPath(name)}/quotas?kind=${kind}`);
+      box.innerHTML = res.entries.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Used</th><th>Limit</th><th>Files</th></tr></thead>
+        <tbody>${res.entries.map(e => `<tr><td>${esc(e.name)}</td><td>${humanSize(e.used)}</td>
+          <td>${e.quota ? humanSize(e.quota) : '<span class="text-muted">none</span>'}</td>
+          <td>${e.objused ?? '—'}${e.objquota ? ' / ' + e.objquota : ''}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<p class="text-muted">Nothing written here yet.</p>';
+    } catch (e) { box.innerHTML = errorState(e.message); }
+  };
+  document.getElementById('quota-kind').addEventListener('change', load);
+  load();
+}
+
+async function openUserProperties(name) {
+  datasetDialog(`User properties of ${name}`, 'Save', `
+    <div id="uprop-list" class="mb-4"></div>
+    <div class="form-group"><label class="form-label" for="uprop-name">Property</label>
+      <input id="uprop-name" class="input mono" type="text" autocomplete="off" placeholder="com.example:note">
+      <span class="form-hint">Lowercase, with a colon. Children inherit it like any property.</span></div>
+    <div class="form-group"><label class="form-label" for="uprop-value">Value</label>
+      <input id="uprop-value" class="input" type="text" autocomplete="off"></div>`,
+    async () => {
+      const prop = document.getElementById('uprop-name').value.trim();
+      await apiJSON('PUT', `/api/storage/datasets/${apiPath(name)}/user-properties`,
+        { [prop]: document.getElementById('uprop-value').value });
+      toast(`${prop} saved.`, 'ok');
+      load();
+    });
+  const load = async () => {
+    const box = document.getElementById('uprop-list');
+    try {
+      const res = await apiJSON('GET', `/api/storage/datasets/${apiPath(name)}/user-properties`);
+      const entries = Object.entries(res.properties);
+      box.innerHTML = entries.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Property</th><th>Value</th><th>Source</th><th></th></tr></thead>
+        <tbody>${entries.map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td>${esc(v.value)}</td>
+          <td class="text-muted">${esc(v.source)}</td>
+          <td>${v.source === 'local' ? `<button type="button" class="btn btn-ghost btn-sm" data-uprop-reset="${esc(k)}">Reset</button>` : ''}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<p class="text-muted">No user properties.</p>';
+      box.querySelectorAll('[data-uprop-reset]').forEach(b => b.addEventListener('click', async () => {
+        try {
+          await apiJSON('POST', `/api/storage/datasets/${apiPath(name)}/inherit`, { property: b.dataset.upropReset });
+          load();
+        } catch (e) { toast(e.message, 'err'); }
+      }));
+    } catch (e) { box.innerHTML = errorState(e.message); }
+  };
+  load();
+}
+
+
+// ── Snapshot actions (Advanced and Expert) ───────────────────────────────────
+
+async function snapshotTask(name, task, body) {
+  return apiJSON('POST', `/api/storage/snapshots/${apiPath(name)}/${task}`, body);
+}
+
+async function destroySnapshots(names) {
+  if (!names.length) return;
+  const recursiveBox = names.length === 1
+    ? `<br><br><label><input type="checkbox" id="snap-destroy-rec"> Also the snapshot of the same name on every child dataset</label>` : '';
+  if (!await confirm('Destroy snapshots', `Destroy permanently:<br><span class="mono">${names.map(esc).join('<br>')}</span>${recursiveBox}`, 'Destroy')) return;
+  const recursive = document.getElementById('snap-destroy-rec')?.checked || false;
+  let done = 0;
+  for (const name of names) {
+    try {
+      await apiJSON('DELETE', `/api/storage/snapshots/${apiPath(name)}${recursive ? '?recursive=true' : ''}`);
+      done++;
+    } catch (e) {
+      toast(`${name}: ${e.message}`, 'err');
+      break;
+    }
+  }
+  if (done) toast(`${done} snapshot(s) destroyed.`, 'ok');
+  loadSnapshots();
+}
+
+async function snapshotAction(name, action) {
+  const [dataset, snap] = name.split('@');
+  try {
+    if (action === 'destroy') { await destroySnapshots([name]); return; }
+    if (action === 'rollback') {
+      const me = _snapRows.find(r => r.name === name);
+      const newer = _snapRows.filter(r => r.dataset === dataset && typeof r.creation === 'number'
+        && me && r.creation > me.creation).map(r => r.name);
+      const msg = `<span class="mono">${esc(dataset)}</span> goes back to how it was at
+        <span class="mono">${esc(snap)}</span>. Everything written since is lost.` +
+        (newer.length ? `<br><br>These newer snapshots are destroyed too:<br><span class="mono">${newer.map(esc).join('<br>')}</span>` : '');
+      if (!await confirm('Roll back', msg, 'Roll back')) return;
+      await snapshotTask(name, 'rollback', { destroy_newer: newer.length > 0 });
+      toast(`${dataset} rolled back.`, 'ok');
+      loadSnapshots();
+      return;
+    }
+    if (action === 'clone') {
+      datasetDialog(`Clone ${name}`, 'Clone', `
+        <div class="form-group"><label class="form-label" for="clone-target">New dataset</label>
+          <input id="clone-target" class="input mono" type="text" autocomplete="off" value="${esc(dataset)}-clone">
+          <span class="form-hint">A writable copy that starts as the snapshot. It lives in the same pool and keeps the snapshot alive.</span></div>`,
+        async () => {
+          const target = document.getElementById('clone-target').value.trim();
+          await snapshotTask(name, 'clone', { target });
+          toast(`Clone ${target} created.`, 'ok');
+          closeModal('modal-dataset');
+          loadSnapshots();
+        });
+      return;
+    }
+    if (action === 'rename' || action === 'bookmark') {
+      const rename = action === 'rename';
+      datasetDialog(rename ? `Rename ${name}` : `Bookmark ${name}`, rename ? 'Rename' : 'Create', `
+        <div class="form-group"><label class="form-label" for="snap-new-name">${rename ? 'New name' : 'Bookmark name'}</label>
+          <input id="snap-new-name" class="input mono" type="text" autocomplete="off" value="${esc(snap)}">
+          <span class="form-hint">${rename ? `Becomes ${esc(dataset)}@<em>name</em>.` : 'A bookmark keeps this point as the base of incremental sends after the snapshot is destroyed.'}</span></div>`,
+        async () => {
+          const value = document.getElementById('snap-new-name').value.trim();
+          await snapshotTask(name, action, rename ? { new_name: value } : { name: value });
+          toast(rename ? 'Renamed.' : 'Bookmark created.', 'ok');
+          closeModal('modal-dataset');
+          loadSnapshots();
+        });
+      return;
+    }
+    if (action === 'holds') { openHolds(name); return; }
+    if (action === 'diff') { openDiff(name); return; }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openHolds(name) {
+  datasetDialog(`Holds on ${name}`, 'Add hold', `
+    <p class="text-muted mb-4">A snapshot with a hold cannot be destroyed until every hold is released.</p>
+    <div id="holds-list" class="mb-4"></div>
+    <div class="form-group"><label class="form-label" for="hold-tag">New hold</label>
+      <input id="hold-tag" class="input mono" type="text" autocomplete="off" placeholder="keep"></div>`,
+    async () => {
+      await snapshotTask(name, 'hold', { tag: document.getElementById('hold-tag').value.trim() });
+      document.getElementById('hold-tag').value = '';
+      load();
+      loadSnapshots();
+    });
+  const load = async () => {
+    const box = document.getElementById('holds-list');
+    try {
+      const res = await apiJSON('GET', `/api/storage/snapshots/${apiPath(name)}/holds`);
+      box.innerHTML = res.holds.length ? res.holds.map(h => `
+        <div class="device-row"><span class="mono">${esc(h.tag)}</span>
+          <span class="text-muted">${snapTime(h.time)}</span>
+          <button type="button" class="btn btn-ghost btn-sm" data-release="${esc(h.tag)}">Release</button></div>`).join('')
+        : '<p class="text-muted">No holds.</p>';
+      box.querySelectorAll('[data-release]').forEach(b => b.addEventListener('click', async () => {
+        try { await snapshotTask(name, 'release', { tag: b.dataset.release }); load(); loadSnapshots(); }
+        catch (e) { toast(e.message, 'err'); }
+      }));
+    } catch (e) { box.innerHTML = errorState(e.message); }
+  };
+  load();
+}
+
+async function openDiff(name) {
+  const [dataset] = name.split('@');
+  const me = _snapRows.find(r => r.name === name);
+  const later = _snapRows.filter(r => r.dataset === dataset && me && typeof r.creation === 'number'
+    && r.creation > me.creation);
+  datasetDialog(`Changes since ${name}`, 'Close', `
+    <div class="form-group"><label class="form-label" for="diff-to">Compare with</label>
+      <select id="diff-to" class="select"><option value="">The dataset as it is now</option>
+        ${later.map(r => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join('')}</select></div>
+    <div id="diff-result"></div>`, async () => closeModal('modal-dataset'));
+  const load = async () => {
+    const to = document.getElementById('diff-to').value;
+    const box = document.getElementById('diff-result');
+    box.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+    try {
+      const res = await apiJSON('GET', `/api/storage/snapshots/${apiPath(name)}/diff${to ? '?to=' + encodeURIComponent(to) : ''}`);
+      const badge = { created: 'ok', removed: 'err', modified: 'warn', renamed: 'info' };
+      box.innerHTML = res.changes.length ? `
+        <p class="text-muted mb-2">${res.total} change(s)${res.truncated ? `, the first ${res.changes.length} shown` : ''}.</p>
+        <div class="table-wrap" style="max-height:24rem;overflow:auto"><table>
+          <thead><tr><th>Change</th><th>Type</th><th>Path</th></tr></thead>
+          <tbody>${res.changes.map(c => `<tr>
+            <td><span class="badge badge-${badge[c.change] || 'muted'}">${esc(c.change)}</span></td>
+            <td class="text-muted">${esc(c.type)}</td>
+            <td class="mono">${esc(c.path)}${c.new_path ? ' → ' + esc(c.new_path) : ''}</td></tr>`).join('')}</tbody>
+        </table></div>` : '<p class="text-muted">Nothing changed.</p>';
+    } catch (e) { box.innerHTML = errorState(e.message); }
+  };
+  document.getElementById('diff-to').addEventListener('change', load);
+  load();
 }
