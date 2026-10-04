@@ -21,7 +21,7 @@ Depends: ${misc:Depends},
  freedomnas-core,
  freedomnas-profiles,
  freedomnas-docs
-Recommends: cron
+Recommends: cron, smartmontools
 Description: FreedomNAS WebUI — FastAPI appliance interface
  The web interface of the FreedomNAS appliance: storage, shares, users,
  network, updates and the first-run wizard, served by uvicorn over TLS.

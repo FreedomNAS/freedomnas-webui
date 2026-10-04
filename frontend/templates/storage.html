@@ -6,7 +6,7 @@
 <div class="page-header">
   <div class="page-header-text">
     <h1>Storage</h1>
-    <p>ZFS pools, datasets, and snapshots</p>
+    <p>ZFS pools, datasets, snapshots, and the health of the disks</p>
   </div>
   <div class="page-header-actions">
     <button id="btn-create-pool" class="btn btn-primary">Create Pool</button>
@@ -22,11 +22,13 @@
   <button class="tab-btn active" data-tab="pools">Pools</button>
   <button class="tab-btn" data-tab="datasets">Datasets</button>
   <button class="tab-btn advanced-only" data-tab="snapshots">Snapshots</button>
+  <button class="tab-btn" data-tab="disks">Disks</button>
 </div>
 
 <div id="panel-pools"     class="tab-panel active"></div>
 <div id="panel-datasets"  class="tab-panel"></div>
 <div id="panel-snapshots" class="tab-panel"></div>
+<div id="panel-disks"     class="tab-panel"></div>
 
 <!-- Create pool -->
 <div id="modal-pool" class="modal-backdrop" role="dialog" aria-modal="true">

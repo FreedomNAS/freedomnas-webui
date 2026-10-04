@@ -95,6 +95,7 @@ function switchTab(tab) {
   if (tab === 'pools')     loadPools();
   if (tab === 'datasets')  loadDatasets();
   if (tab === 'snapshots') loadSnapshots();
+  if (tab === 'disks')     loadDisks();
 }
 
 async function loadPools() {
@@ -250,6 +251,100 @@ async function loadSnapshots() {
       </div>`;
   } catch (e) {
     el.innerHTML = errorState(e.message);
+  }
+}
+
+const DISK_HEALTH = {
+  ok:      ['ok',    'OK'],
+  warning: ['warn',  'Attention'],
+  failing: ['err',   'Failing'],
+  standby: ['muted', 'Asleep'],
+  unknown: ['muted', 'No SMART data'],
+};
+
+async function loadDisks() {
+  const el = document.getElementById('panel-disks');
+  el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  try {
+    const d = await apiJSON('GET', '/api/storage/disks/');
+    if (!d.available) {
+      el.innerHTML = emptyState('SMART tools are not installed: install smartmontools to see the health of the disks.');
+      return;
+    }
+    if (!d.disks.length) { el.innerHTML = emptyState('No disks found.'); return; }
+    el.innerHTML = d.disks.map(renderDisk).join('');
+    el.querySelectorAll('[data-smart-test]').forEach(b =>
+      b.addEventListener('click', () => startSelfTest(b, b.dataset.disk, b.dataset.smartTest)));
+  } catch (e) {
+    el.innerHTML = errorState(e.message);
+  }
+}
+
+function renderDisk(d) {
+  const [badge, label] = DISK_HEALTH[d.health] || DISK_HEALTH.unknown;
+  const hint = d.health === 'failing'
+    ? 'Copy the data on this disk elsewhere and replace it as soon as possible.'
+    : d.health === 'warning'
+      ? 'The disk shows signs of wear: keep a backup of its data and watch it.'
+      : '';
+  const smart = d.health !== 'standby' && d.health !== 'unknown';
+  const test = d.test_running
+    ? `Self-test running, ${esc(d.test_running.remaining_percent)}% left`
+    : d.last_test
+      ? `Last self-test: ${esc(d.last_test.type)} — ${esc(d.last_test.status)}${d.last_test.hours != null ? ` (at ${esc(d.last_test.hours)} h)` : ''}`
+      : 'No self-test recorded';
+  return `
+    <div class="pool-card mb-4">
+      <div class="pool-header">
+        <div>
+          <div class="pool-name"><span class="mono">${esc(d.name)}</span> ${esc(d.model)}</div>
+          <div class="pool-detail">${[d.kind, humanSize(d.size), d.serial && `S/N ${esc(d.serial)}`,
+            d.pools.length ? `pool ${d.pools.map(esc).join(', ')}` : 'not in a pool']
+            .filter(Boolean).join(' · ')}</div>
+        </div>
+        <span class="badge badge-${badge}">${label}</span>
+      </div>
+      <div class="pool-stats">
+        <div class="pool-stat-item"><span class="pool-stat-label">Temperature</span><span class="pool-stat-value">${d.temperature != null ? `${esc(d.temperature)} °C` : '—'}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Powered on</span><span class="pool-stat-value">${d.power_on_hours != null ? `${esc(d.power_on_hours)} h` : '—'}</span></div>
+      </div>
+      ${hint ? `<p class="form-hint mt-3">${hint}</p>` : ''}
+      ${d.health === 'standby' || d.health === 'unknown' ? `<p class="form-hint mt-3">${d.reasons.map(esc).join(' ')}</p>` : ''}
+      <div class="advanced-only mt-3">
+        ${smart && d.reasons.length ? `<ul class="text-muted">${d.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+        ${smart ? `<p class="text-muted">${test}</p>
+          <button class="btn btn-secondary btn-sm" data-disk="${esc(d.name)}" data-smart-test="short">Short self-test</button>
+          <button class="btn btn-secondary btn-sm expert-only" data-disk="${esc(d.name)}" data-smart-test="long">Long self-test</button>` : ''}
+      </div>
+      ${d.attributes.length ? `
+      <details class="expert-only mt-3">
+        <summary>SMART attributes${d.error_count != null ? ` · ${esc(d.error_count)} errors logged` : ''}</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Attribute</th><th>Value</th><th>Worst</th><th>Threshold</th><th>Raw</th><th>Failed</th></tr></thead>
+            <tbody>${d.attributes.map(a => `
+              <tr><td>${esc(a.id)}</td><td class="mono">${esc(a.name)}</td><td>${esc(a.value)}</td>
+                <td>${esc(a.worst)}</td><td>${esc(a.thresh)}</td><td class="mono">${esc(a.raw)}</td>
+                <td>${esc(a.when_failed || '—')}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>` : ''}
+    </div>`;
+}
+
+async function startSelfTest(btn, disk, type) {
+  if (type === 'long' && !await confirm('Long self-test',
+      `The long self-test reads the whole surface of ${disk} and can take hours. The disk stays usable, only slower.`,
+      'Start')) return;
+  setLoading(btn, true, '…');
+  try {
+    const r = await apiJSON('POST', `/api/storage/disks/${encodeURIComponent(disk)}/test`, { type });
+    toast(r.detail, 'ok');
+    loadDisks();
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'err');
+    setLoading(btn, false);
   }
 }
 
