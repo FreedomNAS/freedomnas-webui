@@ -99,6 +99,7 @@ function switchTab(tab) {
   if (tab === 'datasets')  loadDatasets();
   if (tab === 'snapshots') loadSnapshots();
   if (tab === 'replication') loadReplication();
+  if (tab === 'events') loadEvents();
   if (tab === 'disks')     loadDisks();
 }
 
@@ -108,7 +109,8 @@ async function loadPools() {
   try {
     const d = await apiJSON('GET', '/api/storage/pools');
     if (!d.pools?.length) { el.innerHTML = emptyState('No ZFS pools found.'); return; }
-    el.innerHTML = d.pools.map(renderPool).join('');
+    el.innerHTML = '<div id="arc-card" class="advanced-only"></div>' + d.pools.map(renderPool).join('');
+    loadArc();
     el.querySelectorAll('[data-attach]').forEach(b =>
       b.addEventListener('click', () => attachDevice(b.dataset.attach)));
     el.querySelectorAll('[data-detach]').forEach(b =>
@@ -1232,6 +1234,10 @@ async function openRemovePool(pool, action) {
 
 let _detailPool = null;
 let _detailTimer = null;
+let _ioTimer = null;
+let _ioPool = null;
+let _ioHistory = [];
+let _ioLast = null;
 
 const ROLE_LABELS = {
   data: 'Data vdevs', special: 'Special vdevs (metadata)', dedup: 'Dedup vdevs',
@@ -1244,6 +1250,11 @@ function stopPoolDetail() {
   if (_detailTimer) clearTimeout(_detailTimer);
   _detailTimer = null;
   _detailPool = null;
+  if (_ioTimer) clearTimeout(_ioTimer);
+  _ioTimer = null;
+  _ioPool = null;
+  _ioHistory = [];
+  _ioLast = null;
 }
 
 async function openPoolDetail(pool) {
@@ -1269,6 +1280,8 @@ async function refreshPoolDetail() {
   if (_detailPool !== pool) return;
   el.innerHTML = renderPoolDetail(st);
   bindPoolDetail(st);
+  renderPoolIo();
+  if (_ioPool !== pool) { _ioPool = pool; poolIoLoop(pool); }
   const busy = st.scan?.state === 'SCANNING' || st.removing ||
     st.groups.some(g => g.vdevs.some(v => hasType(v, ['replacing', 'spare'])));
   if (busy) _detailTimer = setTimeout(refreshPoolDetail, 3000);
@@ -1345,6 +1358,10 @@ function renderPoolDetail(st) {
           <button class="btn btn-secondary btn-sm" data-pool-task="upgrade">Upgrade features</button>
           <button class="btn btn-secondary btn-sm" data-pool-task="reguid">New GUID</button>`}
       </div>` : ''}
+    </div>
+    <div class="card mb-4">
+      <div class="card-header">Live I/O</div>
+      <div id="pool-io" class="mt-2"><span class="text-muted">Measuring…</span></div>
     </div>
     ${st.groups.map(g => `
       <div class="card mb-4">
@@ -1626,6 +1643,7 @@ function datasetMenu(r) {
   options.push(['snapshots', 'Show snapshots']);
   if (expert && r.origin) options.push(['promote', `Promote (clone of ${r.origin})`]);
   if (expert) options.push(['userprops', 'User properties…']);
+  if (expert) options.push(['delegations', 'Delegated permissions…']);
   return `<select class="select" data-ds-menu="${esc(r.name)}" style="width:auto">
     <option value="">More…</option>
     ${options.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}
@@ -1636,6 +1654,7 @@ async function datasetAction(name, action) {
   if (action === 'snapshots') { _snapFilter = name; switchTab('snapshots'); return; }
   if (action === 'quotas') { openQuotas(name); return; }
   if (action === 'userprops') { openUserProperties(name); return; }
+  if (action === 'delegations') { openDelegations(name); return; }
   if (action === 'unmount' && !await confirm('Unmount', `Unmount <span class="mono">${esc(name)}</span>? Shares on it stop working until it is mounted again.`, 'Unmount')) return;
   if (action === 'promote' && !await confirm('Promote clone', `<span class="mono">${esc(name)}</span> stops depending on its origin snapshot; the origin becomes a clone of it instead.`, 'Promote')) return;
   try {
@@ -2135,4 +2154,203 @@ async function refreshTransfers() {
   }));
 
   if (jobs.some(j => j.state === 'running')) _replTimer = setTimeout(refreshTransfers, 2000);
+}
+
+
+
+// ── Live I/O, ARC, events, delegated permissions ─────────────────────────────
+
+async function poolIoLoop(pool) {
+  _ioTimer = null;
+  if (_detailPool !== pool || _ioPool !== pool) return;
+  try {
+    const res = await apiJSON('GET', `/api/storage/pools/${encodeURIComponent(pool)}/iostat`);
+    if (_detailPool !== pool) return;
+    _ioLast = res.devices;
+    const total = res.devices[0];
+    if (total) {
+      _ioHistory.push([total.read_bytes, total.write_bytes]);
+      if (_ioHistory.length > 60) _ioHistory.shift();
+    }
+    renderPoolIo();
+  } catch (e) {
+    const box = document.getElementById('pool-io');
+    if (box) box.innerHTML = errorState(e.message);
+  }
+  if (_detailPool === pool && _ioPool === pool) _ioTimer = setTimeout(() => poolIoLoop(pool), 2000);
+}
+
+function ioSparkline() {
+  if (_ioHistory.length < 2) return '';
+  const w = 600, h = 80, step = w / 59, n = _ioHistory.length;
+  const top = Math.max(1, ..._ioHistory.flat());
+  const line = idx => _ioHistory.map((v, i) =>
+    `${(w - (n - 1 - i) * step).toFixed(1)},${(h - 4 - (h - 8) * v[idx] / top).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:80px">
+      <polyline points="${line(0)}" fill="none" stroke="var(--info)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      <polyline points="${line(1)}" fill="none" stroke="var(--warn)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="text-muted" style="font-size:0.8rem"><span style="color:var(--info)">●</span> read
+      <span style="color:var(--warn)">●</span> write · peak ${humanSize(top)}/s</div>`;
+}
+
+function renderPoolIo() {
+  const box = document.getElementById('pool-io');
+  if (!box || !_ioLast) return;
+  const rate = n => n ? `${humanSize(n)}/s` : '0';
+  box.innerHTML = ioSparkline() + `<div class="table-wrap mt-2"><table>
+    <thead><tr><th>Device</th><th>Read ops/s</th><th>Write ops/s</th><th>Read</th><th>Write</th></tr></thead>
+    <tbody>${_ioLast.map((d, i) => `<tr${i === 0 ? ' style="font-weight:600"' : ''}>
+      <td class="mono">${esc(d.name)}</td><td>${d.read_ops}</td><td>${d.write_ops}</td>
+      <td>${rate(d.read_bytes)}</td><td>${rate(d.write_bytes)}</td></tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+async function loadArc() {
+  const box = document.getElementById('arc-card');
+  if (!box) return;
+  try {
+    const a = await apiJSON('GET', '/api/storage/arc');
+    const pct = a.max ? Math.round(100 * a.size / a.max) : 0;
+    box.innerHTML = `<div class="pool-card mb-4">
+      <div class="pool-header"><div><div class="pool-name">ARC — read cache in RAM</div>
+        <div class="pool-detail">${a.hit_ratio !== null ? `${a.hit_ratio}% of reads served from RAM since boot` : ''}</div></div></div>
+      <div class="progress-wrap" title="${pct}% of the maximum"><div class="progress-bar ok" style="width:${pct}%"></div></div>
+      <div class="pool-stats">
+        <div class="pool-stat-item"><span class="pool-stat-label">Size</span><span class="pool-stat-value">${humanSize(a.size)}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Target</span><span class="pool-stat-value">${humanSize(a.target)}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">Maximum</span><span class="pool-stat-value">${humanSize(a.max)}</span></div>
+        <div class="pool-stat-item"><span class="pool-stat-label">L2ARC</span><span class="pool-stat-value">${a.l2_size ? humanSize(a.l2_size) + (a.l2_hit_ratio !== null ? ` · ${a.l2_hit_ratio}% hits` : '') : 'none'}</span></div>
+      </div></div>`;
+  } catch { box.innerHTML = ''; }
+}
+
+let _events = [];
+
+async function loadEvents() {
+  const el = document.getElementById('panel-events');
+  el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
+  try {
+    _events = (await apiJSON('GET', '/api/storage/events')).events;
+    renderEvents(el);
+  } catch (e) { el.innerHTML = errorState(e.message); }
+}
+
+function renderEvents(el) {
+  const q = (document.getElementById('events-filter')?.value || '').toLowerCase();
+  const errorsOnly = document.getElementById('events-errors')?.checked || false;
+  const hideHistory = document.getElementById('events-history')?.checked ?? true;
+  const shown = _events.filter(e => (!errorsOnly || e.error) && (!hideHistory || e.short !== 'history_event') &&
+    (!q || `${e.class} ${Object.values(e.fields).join(' ')}`.toLowerCase().includes(q)));
+  el.innerHTML = `
+    <div class="section-header">
+      <span class="d-flex gap-3" style="align-items:center">
+        <input class="input" id="events-filter" type="search" placeholder="Filter" value="${esc(q)}" style="max-width:18rem">
+        <label style="white-space:nowrap"><input type="checkbox" id="events-errors"${errorsOnly ? ' checked' : ''}> Errors only</label>
+        <label style="white-space:nowrap"><input type="checkbox" id="events-history"${hideHistory ? ' checked' : ''}> Hide command history</label>
+      </span>
+      <span><button class="btn btn-secondary btn-sm" id="events-reload">Reload</button>
+        <button class="btn btn-danger btn-sm" id="events-clear">Clear all</button></span>
+    </div>
+    <p class="text-muted mb-4">What the ZFS kernel module reported since boot: pool changes, scrubs, device errors (newest first, ${shown.length} of ${_events.length}).</p>
+    ${shown.length ? shown.map(e => `
+      <details class="card mb-2" style="padding:10px 16px">
+        <summary><span class="badge badge-${e.error ? 'err' : 'muted'}">${esc(e.short)}</span>
+          <span class="mono text-muted">${esc(e.time)}</span> ${e.pool ? `<span class="mono">${esc(e.pool)}</span>` : ''}</summary>
+        <pre class="mono mt-2" style="white-space:pre-wrap;font-size:0.8rem">${esc(Object.entries(e.fields)
+          .filter(([k]) => !['class', 'time', 'eid', 'version'].includes(k))
+          .map(([k, v]) => `${k} = ${v}`).join('\n'))}</pre>
+      </details>`).join('') : emptyState('No events.')}`;
+  const filter = el.querySelector('#events-filter');
+  filter.addEventListener('input', () => {
+    renderEvents(el);
+    const again = el.querySelector('#events-filter');
+    again.focus();
+    again.setSelectionRange(again.value.length, again.value.length);
+  });
+  el.querySelector('#events-errors').addEventListener('change', () => renderEvents(el));
+  el.querySelector('#events-history').addEventListener('change', () => renderEvents(el));
+  el.querySelector('#events-reload').addEventListener('click', loadEvents);
+  el.querySelector('#events-clear').addEventListener('click', async () => {
+    if (!await confirm('Clear events', 'Empty the ZFS event log for every pool?', 'Clear')) return;
+    try { await apiJSON('POST', '/api/storage/events/clear', {}); loadEvents(); }
+    catch (err) { toast(err.message, 'err'); }
+  });
+}
+
+const DELEGABLE = ['create', 'destroy', 'mount', 'snapshot', 'rollback', 'clone', 'promote', 'rename',
+  'send', 'send:raw', 'receive', 'hold', 'release', 'bookmark', 'diff', 'share', 'load-key',
+  'change-key', 'userprop', 'userquota', 'groupquota', 'allow'];
+
+async function openDelegations(name) {
+  datasetDialog(`Delegated permissions on ${name}`, 'Grant', `
+    <p class="text-muted mb-4">Let ordinary users run zfs commands on this dataset (zfs allow). The pool's <span class="mono">delegation</span> property must be on.</p>
+    <div id="deleg-list" class="mb-4"></div>
+    <div class="form-group"><label class="form-label" for="deleg-who">Grant to</label>
+      <select id="deleg-who" class="select">
+        <option value="user">Users</option><option value="group">Groups</option>
+        <option value="everyone">Everyone</option><option value="create">Whoever creates a dataset below</option>
+        <option value="set">Define a permission set</option></select></div>
+    <div class="form-group" id="deleg-names-group"><label class="form-label" for="deleg-names">Names, comma separated</label>
+      <input id="deleg-names" class="input" type="text" autocomplete="off" placeholder="sarah,backup"></div>
+    <div class="form-group" id="deleg-set-group" hidden><label class="form-label" for="deleg-set">Set name</label>
+      <input id="deleg-set" class="input mono" type="text" autocomplete="off" value="@"></div>
+    <div class="form-group" id="deleg-scope-group"><label class="form-label" for="deleg-scope">Applies to</label>
+      <select id="deleg-scope" class="select"><option value="both">This dataset and the ones below</option>
+        <option value="local">Only this dataset</option><option value="descendent">Only the ones below</option></select></div>
+    <div class="form-group"><label class="form-label">Permissions</label>
+      <div class="d-flex gap-3" style="flex-wrap:wrap">${DELEGABLE.map(p =>
+        `<label class="mono" style="font-size:0.85rem"><input type="checkbox" data-perm="${p}"> ${p}</label>`).join('')}</div></div>
+    <div class="form-group"><label class="form-label" for="deleg-extra">More permissions, properties or @sets</label>
+      <input id="deleg-extra" class="input mono" type="text" autocomplete="off" placeholder="compression,@backup"></div>`,
+    async () => {
+      const perms = [...document.querySelectorAll('[data-perm]:checked')].map(c => c.dataset.perm)
+        .concat(document.getElementById('deleg-extra').value.split(',').map(x => x.trim()).filter(Boolean));
+      await apiJSON('POST', `/api/storage/delegations/${apiPath(name)}/grant`, delegationRequest(perms));
+      toast('Permissions granted.', 'ok');
+      load();
+    });
+  const whoSel = document.getElementById('deleg-who');
+  const syncWho = () => {
+    const who = whoSel.value;
+    document.getElementById('deleg-names-group').hidden = !['user', 'group'].includes(who);
+    document.getElementById('deleg-set-group').hidden = who !== 'set';
+    document.getElementById('deleg-scope-group').hidden = ['create', 'set'].includes(who);
+  };
+  whoSel.addEventListener('change', syncWho);
+  syncWho();
+  const load = async () => {
+    const box = document.getElementById('deleg-list');
+    try {
+      const res = await apiJSON('GET', `/api/storage/delegations/${apiPath(name)}/list`);
+      box.innerHTML = res.delegations.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Section</th><th>Who</th><th>Permissions</th><th></th></tr></thead>
+        <tbody>${res.delegations.map((d, i) => `<tr><td class="text-muted">${esc(d.section)}</td>
+          <td>${esc(d.who === 'set' ? d.name : d.who === 'create' ? 'creator' : d.who === 'everyone' ? 'everyone' : `${d.who} ${d.name}`)}</td>
+          <td class="mono">${esc(d.perms.join(', '))}</td>
+          <td><button type="button" class="btn btn-ghost btn-sm" data-revoke="${i}">Revoke</button></td></tr>`).join('')}</tbody>
+      </table></div>` : '<p class="text-muted">Nothing is delegated here.</p>';
+      box.querySelectorAll('[data-revoke]').forEach(b => b.addEventListener('click', async () => {
+        const d = res.delegations[Number(b.dataset.revoke)];
+        const body = { who: d.who, scope: d.scope, perms: d.perms };
+        if (d.who === 'user' || d.who === 'group') body.names = d.name;
+        if (d.who === 'set') body.set = d.name;
+        try {
+          await apiJSON('POST', `/api/storage/delegations/${apiPath(name)}/revoke`, body);
+          load();
+        } catch (e) { toast(e.message, 'err'); }
+      }));
+    } catch (e) { box.innerHTML = errorState(e.message); }
+  };
+  load();
+}
+
+function delegationRequest(perms) {
+  return {
+    who: document.getElementById('deleg-who').value,
+    names: document.getElementById('deleg-names').value,
+    set: document.getElementById('deleg-set').value.trim(),
+    scope: document.getElementById('deleg-scope').value,
+    perms,
+  };
 }

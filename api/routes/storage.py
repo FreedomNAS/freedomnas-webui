@@ -51,6 +51,10 @@ POST /replication/estimate|replicate|send-to-file|receive-from-file — start on
 POST /replication/jobs/{id}/cancel — stop a running job
 GET  /replication/resumable — datasets with an interrupted receive
 POST /replication/resume|abort — continue it, or throw the partial data away
+GET  /delegations/{dataset}/list — zfs allow, POST …/grant / POST …/revoke
+GET  /events, POST /events/clear — the ZFS event log
+GET  /pools/{pool}/iostat — one second of per-vdev I/O
+GET  /arc                 — ARC and L2ARC statistics
 """
 
 import asyncio
@@ -71,6 +75,7 @@ from freedomnas import pool_removal
 from freedomnas import shadow
 from freedomnas import snapshots as zfs_snapshots
 from freedomnas import replication
+from freedomnas import delegation, monitoring
 from freedomnas import keymgmt
 from freedomnas.keymgmt import PoolProvisioner, KeyManagementError
 from api.deps import authenticate, get_config, get_engine
@@ -1616,3 +1621,55 @@ async def replication_cancel(job_id: int, username: str = Depends(authenticate))
 async def replication_resumable(username: str = Depends(authenticate)):
     tokens, err = await _replication(replication.resume_tokens)
     return err or {"datasets": [t["dataset"] for t in tokens]}
+
+
+# ---------------------------------------------------------------------------
+# Delegated permissions, events, I/O and ARC
+# ---------------------------------------------------------------------------
+
+@router.get("/delegations/{dataset:path}/list")
+async def list_delegations(dataset: str, username: str = Depends(authenticate)):
+    stdout, err = await _run("allow_show", dataset=dataset)
+    return err or {"dataset": dataset, "delegations": delegation.parse(stdout)}
+
+
+@router.post("/delegations/{dataset:path}/{action}")
+async def change_delegation(dataset: str, action: str, body: dict,
+                            username: str = Depends(authenticate)):
+    if action not in ("grant", "revoke"):
+        return _problem(404, f"Unknown delegation action: {action}")
+    try:
+        args = delegation.arguments(body, revoking=action == "revoke")
+    except delegation.DelegationProblem as exc:
+        return _problem(422, str(exc))
+    _, err = await _run("allow" if action == "grant" else "unallow", dataset=dataset, **args)
+    return err or {"dataset": dataset, action: args}
+
+
+@router.get("/events")
+async def zfs_events(username: str = Depends(authenticate)):
+    stdout, err = await _run("events")
+    return err or {"events": monitoring.parse_events(stdout)}
+
+
+@router.post("/events/clear")
+async def clear_zfs_events(username: str = Depends(authenticate)):
+    _, err = await _run("events_clear")
+    return err or {"cleared": True}
+
+
+@router.get("/pools/{pool_name}/iostat")
+async def pool_iostat(pool_name: str, username: str = Depends(authenticate)):
+    stdout, err = await _run("pool_iostat", timeout=15, pool_name=pool_name)
+    return err or {"pool": pool_name, "devices": monitoring.parse_iostat(stdout, pool_name)}
+
+
+@router.get("/arc")
+async def arc_stats(username: str = Depends(authenticate)):
+    stdout, err = await _run("arc_stats")
+    if err:
+        return err
+    summary = monitoring.arc_summary(monitoring.parse_arcstats(stdout))
+    if summary is None:
+        return _problem(404, "No ARC statistics on this system")
+    return summary
