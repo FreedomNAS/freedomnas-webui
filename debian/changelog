@@ -1,3 +1,12 @@
+freedomnas-webui (0.9.11-1) unstable; urgency=medium
+
+  * Network page: DHCP or static IPv4, DNS, IPv6, MTU and routes, with
+    automatic rollback and a move to the new address
+  * Bridges, bonds and VLANs, a WireGuard VPN with QR codes, and Forget
+    for interfaces no longer on the system
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Thu, 08 Oct 2026 16:41:30 +0000
+
 freedomnas-webui (0.9.10-1) unstable; urgency=medium
 
   * The installer reads one package component, its channel: main for
