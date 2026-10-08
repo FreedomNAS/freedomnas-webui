@@ -20,7 +20,8 @@ Depends: ${misc:Depends},
  python3-yaml,
  freedomnas-core,
  freedomnas-profiles,
- freedomnas-docs
+ freedomnas-docs,
+ libglib2.0-bin
 Recommends: cron, smartmontools
 Description: FreedomNAS WebUI — FastAPI appliance interface
  The web interface of the FreedomNAS appliance: storage, shares, users,

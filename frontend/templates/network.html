@@ -16,44 +16,94 @@
   </div>
 </div>
 
+<div id="net-pending-banner" class="alert alert-warn mb-4" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <span id="net-pending-text"></span>
+  <span class="d-flex gap-2" style="margin-left:auto">
+    <button class="btn btn-primary btn-sm" id="btn-banner-keep">Keep</button>
+    <button class="btn btn-secondary btn-sm" id="btn-banner-revert">Undo</button>
+  </span>
+</div>
+
 <div id="iface-list">
   <div class="page-loading"><div class="spinner"></div></div>
 </div>
 
-<!-- Edit IP modal (Advanced+) -->
 <div id="modal-ip" class="modal-backdrop advanced-only" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-title" id="modal-ip-title">Configure IP</span>
-      <button class="modal-close" data-close aria-label="Close">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      <span class="modal-title" id="modal-ip-title">Configure interface</span>
+      <button class="modal-close" data-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <form id="form-ip">
       <input type="hidden" id="f-ip-iface">
+      <input type="hidden" id="f-ip-current">
       <div class="modal-body">
-        <div class="alert alert-warn" style="margin-bottom:4px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span>Changing the IP address may disconnect your current session.</span>
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="flex:3">
-            <label class="form-label" for="f-ip-addr">IP Address</label>
-            <input id="f-ip-addr" class="input" type="text" placeholder="192.168.1.50" required>
-          </div>
-          <div class="form-group" style="flex:1">
-            <label class="form-label" for="f-ip-cidr">Prefix</label>
-            <input id="f-ip-cidr" class="input" type="number" min="1" max="32" placeholder="24" required>
-          </div>
-        </div>
         <div class="form-group">
-          <label class="form-label" for="f-ip-gw">Gateway</label>
-          <input id="f-ip-gw" class="input" type="text" placeholder="192.168.1.1" required>
+          <label class="form-label" for="f-ip-method">IPv4</label>
+          <select id="f-ip-method" class="select">
+            <option value="dhcp">Automatic (DHCP)</option>
+            <option value="static">Static address</option>
+          </select>
+        </div>
+        <div id="ipv4-static">
+          <div class="form-row">
+            <div class="form-group" style="flex:3">
+              <label class="form-label" for="f-ip-addr">IP Address</label>
+              <input id="f-ip-addr" class="input" type="text" placeholder="192.168.1.50">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label" for="f-ip-cidr">Prefix</label>
+              <input id="f-ip-cidr" class="input" type="number" min="1" max="32" placeholder="24">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="f-ip-gw">Gateway</label>
+            <input id="f-ip-gw" class="input" type="text" placeholder="192.168.1.1">
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label" for="f-ip-dns">DNS Servers</label>
-          <input id="f-ip-dns" class="input" type="text" placeholder="1.1.1.1, 8.8.8.8">
-          <span class="form-hint">Comma-separated IP addresses</span>
+          <input id="f-ip-dns" class="input" type="text" placeholder="1.1.1.1, 9.9.9.9">
+          <span class="form-hint" id="f-ip-dns-hint">IPv4 or IPv6 addresses, separated by commas. Empty: the ones DHCP gives</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="f-ip-search">Search Domains</label>
+          <input id="f-ip-search" class="input" type="text" placeholder="lan, home.arpa">
+        </div>
+        <div class="expert-only">
+          <div class="form-group">
+            <label class="form-label" for="f-ip6-method">IPv6</label>
+            <select id="f-ip6-method" class="select">
+              <option value="auto">Automatic (router advertisements / DHCPv6)</option>
+              <option value="static">Static address</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <div id="ipv6-static">
+            <div class="form-row">
+              <div class="form-group" style="flex:3">
+                <label class="form-label" for="f-ip6-addr">IPv6 Address</label>
+                <input id="f-ip6-addr" class="input" type="text" placeholder="fd00::50">
+              </div>
+              <div class="form-group" style="flex:1">
+                <label class="form-label" for="f-ip6-prefix">Prefix</label>
+                <input id="f-ip6-prefix" class="input" type="number" min="1" max="128" placeholder="64">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="f-ip6-gw">IPv6 Gateway</label>
+              <input id="f-ip6-gw" class="input" type="text" placeholder="fd00::1">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="f-ip-mtu">MTU</label>
+            <input id="f-ip-mtu" class="input" type="number" min="576" max="9216" placeholder="Automatic">
+            <span class="form-hint">Empty: the interface's default. 9000 for jumbo frames, only if every device on the network supports them</span>
+          </div>
+        </div>
+        <div class="alert alert-info" style="margin-top:4px">
+          <span>The change is undone by itself after <span class="rollback-seconds">90</span> seconds unless it is confirmed. If the address changes, the browser moves to the new one and that confirms it.</span>
         </div>
       </div>
       <div class="modal-footer">
@@ -61,6 +111,22 @@
         <button type="submit" id="btn-ip-submit" class="btn btn-primary">Apply</button>
       </div>
     </form>
+  </div>
+</div>
+
+<div id="modal-net-pending" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Applying network settings</span>
+    </div>
+    <div class="modal-body">
+      <p id="net-pending-status">Applying…</p>
+      <p id="net-pending-link" class="text-sm" hidden></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="btn-net-revert">Undo now</button>
+      <button type="button" class="btn btn-primary" id="btn-net-keep" disabled>Keep these settings</button>
+    </div>
   </div>
 </div>
 {% endblock %}
