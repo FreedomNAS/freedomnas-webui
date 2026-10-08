@@ -9,6 +9,10 @@ GET  /pending                 — the change waiting for confirmation, if any
 POST /confirm                 — keep the pending change and save it
 POST /virtual                 — create a bridge, bond or VLAN under a checkpoint (202, pending)
 DELETE /virtual/{name}        — remove one under a checkpoint (202, pending)
+GET  /wireguard               — the WireGuard VPN and its devices, with their last handshake
+POST /wireguard               — create it (fnas_wg1); DELETE /wireguard removes it
+POST /wireguard/peers         — add a device: its configuration and QR code, shown once
+DELETE /wireguard/peers/{name} — the device can no longer connect
 POST /revert                  — undo the pending change now
 POST /confirm-token           — keep it, from a browser that reached the new address
                                  (no login: the one-time token PUT returned is the proof)
@@ -28,7 +32,7 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from freedomnas import netconfig, netnames
+from freedomnas import netconfig, netnames, wireguard
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -157,7 +161,8 @@ def _present(engine) -> dict:
 @router.get("/config")
 async def network_config(username: str = Depends(authenticate)):
     config = get_config()
-    entries = [i for i in config.get_interfaces() if i.get("logical_name")]
+    entries = [{k: v for k, v in i.items() if k != "private_key"}
+               for i in config.get_interfaces() if i.get("logical_name")]
     saved = {i["logical_name"]: i.get("config") or {} for i in entries}
     return {"interfaces": saved, "entries": entries, "rollback_seconds": ROLLBACK_SECONDS,
             "pending": _pending_view()}
@@ -299,3 +304,109 @@ async def revert(username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": "Network change undone"}
+
+
+def _networks_in_use(engine) -> list:
+    networks = []
+    try:
+        stdout, _ = engine.execute("network", "list_interfaces")
+        for link in json.loads(stdout):
+            if not isinstance(link, dict) or str(link.get("ifname", "")).startswith(("lo", "fnas_wg")):
+                continue
+            for addr in link.get("addr_info") or []:
+                if addr.get("family") == "inet" and addr.get("local"):
+                    networks.append(f"{addr['local']}/{addr.get('prefixlen', 32)}")
+    except (CommandExecutionError, CommandTranslationError, ValueError, TypeError):
+        pass
+    return networks
+
+
+def _wireguard_view(engine, entry: dict) -> dict:
+    try:
+        live = wireguard.status(engine, entry["logical_name"])
+    except (CommandExecutionError, CommandTranslationError):
+        live = {}
+    server = {k: v for k, v in entry.items() if k not in ("private_key", "peers")}
+    server["public_key"] = wireguard.public_key(entry["private_key"])
+    peers = [dict(p, **live.get(p["public_key"], {"latest_handshake": 0, "rx": 0, "tx": 0, "endpoint": ""}))
+             for p in entry.get("peers") or []]
+    return {"server": server, "peers": peers}
+
+
+@router.get("/wireguard")
+async def wireguard_get(username: str = Depends(authenticate)):
+    entry = wireguard.find(get_config().get_interfaces())
+    if not entry:
+        return {"server": None, "peers": []}
+    return _wireguard_view(get_engine(), entry)
+
+
+@router.post("/wireguard")
+async def wireguard_create(body: dict, username: str = Depends(authenticate)):
+    cfg = get_config()
+    if wireguard.find(cfg.get_interfaces()):
+        return JSONResponse(status_code=409, content={"detail": "The WireGuard VPN exists already"})
+    engine = get_engine()
+    try:
+        entry = wireguard.new_server(body, _networks_in_use(engine))
+        wireguard.apply(engine, entry)
+        cfg.add_interface(entry)
+    except wireguard.WireGuardProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return _wireguard_view(engine, entry)
+
+
+@router.delete("/wireguard")
+async def wireguard_delete(username: str = Depends(authenticate)):
+    cfg = get_config()
+    entry = wireguard.find(cfg.get_interfaces())
+    if not entry:
+        return JSONResponse(status_code=404, content={"detail": "There is no WireGuard VPN"})
+    try:
+        wireguard.remove(get_engine(), entry["logical_name"])
+        cfg.remove_interface(entry["logical_name"])
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"detail": "WireGuard VPN removed"}
+
+
+@router.post("/wireguard/peers")
+async def wireguard_add_peer(body: dict, username: str = Depends(authenticate)):
+    cfg = get_config()
+    entry = wireguard.find(cfg.get_interfaces())
+    if not entry:
+        return JSONResponse(status_code=404, content={"detail": "Create the WireGuard VPN first"})
+    engine = get_engine()
+    try:
+        peer, client_conf = wireguard.add_peer(entry, str((body or {}).get("name") or ""))
+        updated = dict(entry, peers=(entry.get("peers") or []) + [peer])
+        wireguard.apply(engine, updated)
+        cfg.add_interface(updated)
+    except wireguard.WireGuardProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    try:
+        qr, _ = engine.execute_with_stdin("network", "qr_svg", client_conf)
+    except (CommandExecutionError, CommandTranslationError):
+        qr = ""
+    return {"peer": peer, "config": client_conf, "qr_svg": qr}
+
+
+@router.delete("/wireguard/peers/{name}")
+async def wireguard_remove_peer(name: str, username: str = Depends(authenticate)):
+    cfg = get_config()
+    entry = wireguard.find(cfg.get_interfaces())
+    if not entry:
+        return JSONResponse(status_code=404, content={"detail": "There is no WireGuard VPN"})
+    try:
+        updated = wireguard.remove_peer(entry, name)
+        wireguard.apply(get_engine(), updated)
+        cfg.add_interface(updated)
+    except wireguard.WireGuardProblem as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"detail": f"{name} can no longer connect"}

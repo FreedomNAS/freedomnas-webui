@@ -38,6 +38,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-banner-revert').addEventListener('click', revert);
 
   bindModalClose('modal-ip');
+  bindModalClose('modal-wg-peer');
+  document.getElementById('wg-body').addEventListener('click', wgClick);
+  document.getElementById('btn-wg-remove').addEventListener('click', wgRemove);
+  document.getElementById('btn-wg-download').addEventListener('click', wgDownload);
+  await loadWireGuard();
 });
 
 async function confirmFromNewAddress() {
@@ -130,7 +135,7 @@ function renderIface(i) {
           ${method ? `<span class="badge badge-info">${method}</span>` : ''}
           ${cfg && cfg.mtu ? `<span class="badge badge-muted expert-only">MTU ${esc(cfg.mtu)}</span>` : ''}
           <span class="badge ${isUp ? 'badge-ok' : 'badge-muted'}">${isUp ? 'UP' : 'DOWN'}</span>
-          ${!isLo && !entry.master ? `
+          ${!isLo && !entry.master && entry.type !== 'wireguard' ? `
             <button class="btn btn-secondary btn-sm advanced-only"
               data-iface="${esc(name)}" data-addr="${esc(v4 ? `${v4.local}/${v4.prefixlen}` : '')}">
               Configure
@@ -151,6 +156,7 @@ function describeKind(entry) {
   if (entry.type === 'bridge') return `Bridge — ports: ${(entry.ports || []).join(', ')}`;
   if (entry.type === 'bond') return `Bond (${entry.mode === 'failover' ? 'failover' : 'LACP'}) — ports: ${(entry.ports || []).join(', ')}`;
   if (entry.type === 'vlan') return `VLAN ${entry.vlan_id} on ${entry.parent}`;
+  if (entry.type === 'wireguard') return 'WireGuard VPN';
   return '';
 }
 
@@ -404,6 +410,117 @@ async function revert() {
     toast(`Error: ${err.message}`, 'err');
   }
   setTimeout(loadInterfaces, 2000);
+}
+
+let wgDevice = null;
+
+async function loadWireGuard() {
+  const body = document.getElementById('wg-body');
+  let d;
+  try {
+    d = await apiJSON('GET', '/api/network/wireguard');
+  } catch (err) {
+    body.innerHTML = `<div class="alert alert-err">${esc(err.message)}</div>`;
+    return;
+  }
+  document.getElementById('btn-wg-remove').hidden = !d.server;
+  if (!d.server) {
+    body.innerHTML = `
+      <div class="form-row">
+        <div class="form-group" style="flex:3">
+          <label class="form-label" for="f-wg-endpoint">Public address</label>
+          <input id="f-wg-endpoint" class="input" type="text" placeholder="myhome.example.org or 203.0.113.7">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="f-wg-port">Port (UDP)</label>
+          <input id="f-wg-port" class="input" type="number" value="51820" min="1024" max="65535">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="f-wg-address">VPN network</label>
+          <input id="f-wg-address" class="input" type="text" value="10.10.0.1/24">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="f-wg-dns">DNS for the devices</label>
+          <input id="f-wg-dns" class="input" type="text" placeholder="optional, e.g. 192.168.1.1">
+        </div>
+      </div>
+      <span class="form-hint">On your router, forward this UDP port to the NAS. The devices reach the NAS itself (shares, WebUI) at its VPN address.</span>
+      <div class="d-flex" style="margin-top:12px"><button class="btn btn-primary" data-wg="create">Create VPN</button></div>`;
+    return;
+  }
+  const s = d.server;
+  const ago = (t) => t ? `${Math.max(0, Math.round(Date.now() / 1000 - t))} s ago` : 'never';
+  body.innerHTML = `
+    <div class="text-sm" style="margin-bottom:12px">
+      <div>NAS address in the VPN: <span class="font-mono">${esc(s.address)}</span> · port <span class="font-mono">${esc(s.listen_port)}</span> · public address <span class="font-mono">${esc(s.endpoint)}</span></div>
+      <div class="text-muted">Public key: <span class="font-mono">${esc(s.public_key)}</span></div>
+    </div>
+    ${d.peers.length ? `<div class="table-wrap"><table><thead><tr><th>Device</th><th>Address</th><th>Last contact</th><th>Received / sent</th><th></th></tr></thead><tbody>
+      ${d.peers.map(p => `<tr><td>${esc(p.name)}</td><td class="font-mono">${esc(p.address)}</td><td>${ago(p.latest_handshake)}</td>
+        <td>${esc(p.rx)} / ${esc(p.tx)} B</td><td><button class="btn btn-danger btn-sm" data-wg="remove" data-name="${esc(p.name)}">Remove</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="text-sm text-muted">No device yet.</div>'}
+    <div class="d-flex gap-2" style="margin-top:12px">
+      <input id="f-wg-peer" class="input" type="text" placeholder="Device name, e.g. Phone" style="max-width:260px">
+      <button class="btn btn-primary" data-wg="add">Add device</button>
+    </div>`;
+}
+
+async function wgClick(e) {
+  const btn = e.target.closest('[data-wg]');
+  if (!btn) return;
+  const action = btn.dataset.wg;
+  try {
+    if (action === 'create') {
+      setLoading(btn, true, 'Creating…');
+      await apiJSON('POST', '/api/network/wireguard', {
+        endpoint: getValue('f-wg-endpoint'), listen_port: getValue('f-wg-port'),
+        address: getValue('f-wg-address'), dns: getValue('f-wg-dns'),
+      });
+      toast('WireGuard VPN created.', 'ok');
+    } else if (action === 'add') {
+      setLoading(btn, true, 'Adding…');
+      const r = await apiJSON('POST', '/api/network/wireguard/peers', { name: getValue('f-wg-peer') });
+      wgDevice = r;
+      document.getElementById('wg-peer-title').textContent = `New device: ${r.peer.name}`;
+      document.getElementById('wg-peer-qr').innerHTML = r.qr_svg || '<span class="text-sm">QR code not available: use the file.</span>';
+      document.getElementById('wg-peer-conf').textContent = r.config;
+      openModal('modal-wg-peer');
+    } else if (action === 'remove') {
+      if (!await confirm(`Remove ${esc(btn.dataset.name)}?`, 'The device can no longer connect.', 'Remove')) return;
+      await apiJSON('DELETE', `/api/network/wireguard/peers/${encodeURIComponent(btn.dataset.name)}`);
+      toast('Device removed.', 'ok');
+    }
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'err');
+  } finally {
+    setLoading(btn, false);
+  }
+  await loadWireGuard();
+  await loadInterfaces();
+}
+
+async function wgRemove() {
+  if (!await confirm('Remove the WireGuard VPN?', 'Every device loses access. Creating it again makes a new key: the devices need new configurations.', 'Remove')) return;
+  try {
+    await apiJSON('DELETE', '/api/network/wireguard');
+    toast('WireGuard VPN removed.', 'ok');
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'err');
+  }
+  await loadWireGuard();
+  await loadInterfaces();
+}
+
+function wgDownload() {
+  if (!wgDevice) return;
+  const blob = new Blob([wgDevice.config], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${wgDevice.peer.name.replace(/[^A-Za-z0-9._-]+/g, '_')}.conf`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

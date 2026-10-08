@@ -244,3 +244,32 @@ def test_configuring_a_bridge_keeps_its_ports_and_does_not_recreate_it(client, c
     client.post("/api/network/confirm")
     assert config.get_interface("fnas_bridge1")["ports"] == ["fnas_lan1"]
     assert config.get_interface("fnas_bridge1")["config"]["ip"] == "192.168.1.5"
+
+
+def test_wireguard_is_created_with_devices_and_qr_codes(client, checkpoint, config):
+    checkpoint.outputs[("network", "list_interfaces")] = json.dumps(
+        [{"ifname": "fnas_lan1", "addr_info": [{"family": "inet", "local": "192.168.1.5", "prefixlen": 24}]}])
+    checkpoint.outputs[("network", "qr_svg")] = "<svg/>"
+    assert client.post("/api/network/wireguard", {"endpoint": "nas.example.org", "address": "192.168.1.9/24"}).status == 422
+    r = client.post("/api/network/wireguard", {"endpoint": "nas.example.org"})
+    assert r.status == 200 and r.body["server"]["address"] == "10.10.0.1/24"
+    assert "private_key" not in r.body["server"] and r.body["server"]["public_key"]
+    [write] = checkpoint.called("network", "wg_write")
+    assert write.stdin.startswith("[Interface]\nPrivateKey = ")
+    assert client.post("/api/network/wireguard", {"endpoint": "x.org"}).status == 409
+
+    r = client.post("/api/network/wireguard/peers", {"name": "phone"})
+    assert r.status == 200 and r.body["qr_svg"] == "<svg/>"
+    assert "Endpoint = nas.example.org:51820" in r.body["config"]
+    assert checkpoint.called("network", "qr_svg")[0].stdin == r.body["config"]
+    saved = next(i for i in config.get_interfaces() if i.get("type") == "wireguard")
+    assert [p["name"] for p in saved["peers"]] == ["phone"]
+    assert "PrivateKey" not in json.dumps(saved["peers"])
+    assert "private_key" not in json.dumps(client.get("/api/network/config").body)
+
+    view = client.get("/api/network/wireguard").body
+    assert view["peers"][0]["name"] == "phone" and view["peers"][0]["latest_handshake"] == 0
+    assert client.delete("/api/network/wireguard/peers/phone").status == 200
+    assert client.delete("/api/network/wireguard/peers/phone").status == 404
+    assert client.delete("/api/network/wireguard").status == 200
+    assert client.get("/api/network/wireguard").body == {"server": None, "peers": []}

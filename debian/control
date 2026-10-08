@@ -22,7 +22,7 @@ Depends: ${misc:Depends},
  freedomnas-profiles,
  freedomnas-docs,
  libglib2.0-bin
-Recommends: cron, smartmontools
+Recommends: cron, smartmontools, wireguard-tools, qrencode
 Description: FreedomNAS WebUI — FastAPI appliance interface
  The web interface of the FreedomNAS appliance: storage, shares, users,
  network, updates and the first-run wizard, served by uvicorn over TLS.
