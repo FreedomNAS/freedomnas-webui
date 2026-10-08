@@ -273,3 +273,27 @@ def test_wireguard_is_created_with_devices_and_qr_codes(client, checkpoint, conf
     assert client.delete("/api/network/wireguard/peers/phone").status == 404
     assert client.delete("/api/network/wireguard").status == 200
     assert client.get("/api/network/wireguard").body == {"server": None, "peers": []}
+
+
+def test_an_interface_no_longer_on_the_system_can_be_forgotten(client, cards, config):
+    config.add_interface({"logical_name": "enp3s0", "config": {"method": "static", "ip": "192.168.1.200",
+                                                                "cidr": 24, "dns": ["1.1.1.1"]}})
+    config.add_interface({"logical_name": "fnas_lan1", "mac_address": "52:54:00:00:00:0a",
+                          "config": {"method": "dhcp"}})
+    assert client.delete("/api/network/interfaces/enp3s0").status == 200
+    [forget] = cards.called("network", "connection_forget")
+    assert forget.command == "nmcli connection delete fnas-enp3s0 >/dev/null 2>&1; true"
+    assert config.get_interface("enp3s0") is None
+    assert client.delete("/api/network/interfaces/enp3s0").status == 404
+
+
+def test_what_is_on_the_system_or_in_use_is_not_forgotten(client, cards, config):
+    config.add_interface({"logical_name": "fnas_lan1", "config": {"method": "dhcp"}})
+    config.add_interface({"logical_name": "fnas_lan9", "master": "fnas_bridge1"})
+    config.add_interface({"logical_name": "fnas_bridge1", "type": "bridge", "ports": ["fnas_lan9"]})
+    r = client.delete("/api/network/interfaces/fnas_lan1")
+    assert r.status == 409 and "on this system" in r.body["detail"]
+    r = client.delete("/api/network/interfaces/fnas_lan9")
+    assert r.status == 409 and "fnas_bridge1" in r.body["detail"]
+    assert client.delete("/api/network/interfaces/fnas_bridge1").status == 409
+    assert not cards.called("network", "connection_forget")

@@ -5,6 +5,7 @@ GET  /interfaces              — list physical interfaces with OS info
 POST /interfaces/{name}/ip    — set static IP on a logical interface
 GET  /config                  — saved configuration of each interface, and any pending change
 PUT  /interfaces/{name}       — apply a configuration under a checkpoint (202, pending)
+DELETE /interfaces/{name}     — forget the saved configuration of an interface this system no longer has
 GET  /pending                 — the change waiting for confirmation, if any
 POST /confirm                 — keep the pending change and save it
 POST /virtual                 — create a bridge, bond or VLAN under a checkpoint (202, pending)
@@ -188,6 +189,32 @@ async def apply_interface(logical_name: str, body: dict, username: str = Depends
         cfg.add_interface(iface)
 
     return _start(logical_name, config, netconfig.reconfigure_steps(entry, config), keep)
+
+
+@router.delete("/interfaces/{logical_name}")
+async def forget_interface(logical_name: str, username: str = Depends(authenticate)):
+    cfg = get_config()
+    entry = cfg.get_interface(logical_name)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"detail": f"Nothing is saved for {logical_name}"})
+    if entry.get("type"):
+        return JSONResponse(status_code=409, content={
+            "detail": f"{logical_name} is a {entry['type']}: remove it instead"})
+    users = [i["logical_name"] for i in cfg.get_interfaces()
+             if logical_name in (i.get("ports") or []) or i.get("parent") == logical_name]
+    if users:
+        return JSONResponse(status_code=409, content={
+            "detail": f"{logical_name} is still used by {', '.join(users)}"})
+    engine = get_engine()
+    try:
+        if logical_name in _present(engine):
+            return JSONResponse(status_code=409, content={
+                "detail": f"{logical_name} is on this system: configure it instead"})
+        engine.execute("network", "connection_forget", interface=logical_name)
+        cfg.remove_interface(logical_name)
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"detail": f"{logical_name} forgotten"}
 
 
 @router.post("/virtual")

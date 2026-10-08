@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('iface-list').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-iface]');
     if (btn) openEditIP(btn.dataset.iface, btn.dataset.addr);
+    const forget = e.target.closest('[data-forget]');
+    if (forget) forgetInterface(forget.dataset.forget);
     const del = e.target.closest('[data-remove]');
     if (del) removeVirtual(del.dataset.remove);
   });
@@ -90,8 +92,9 @@ async function loadInterfaces() {
     showBanner(c.pending);
     const ifaces = Array.isArray(d.interfaces) ? d.interfaces : Object.values(d.interfaces || {});
     present = ifaces.map(i => i.ifname || i.name).filter(Boolean);
-    if (!ifaces.length) { el.innerHTML = emptyIface(); return; }
-    el.innerHTML = ifaces.map(renderIface).join('');
+    const missing = Object.values(entries).filter(e => !e.type && !present.includes(e.logical_name));
+    if (!ifaces.length && !missing.length) { el.innerHTML = emptyIface(); return; }
+    el.innerHTML = ifaces.map(renderIface).join('') + missing.map(renderMissing).join('');
   } catch (e) {
     el.innerHTML = `<div class="alert alert-err">${esc(e.message)}</div>`;
   }
@@ -149,6 +152,44 @@ function renderIface(i) {
           ${addr.map(a => `<div class="d-flex items-center gap-2"><span class="badge badge-info font-mono">${esc(a)}</span></div>`).join('')}
         </div>` : '<div class="text-sm text-muted">No IPv4 address assigned</div>'}
     </div>`;
+}
+
+function renderMissing(entry) {
+  const cfg = entry.config || {};
+  const what = entry.master ? `Port of ${entry.master}`
+    : cfg.method === 'static' ? `Static ${cfg.ip}/${cfg.cidr}` : (cfg.method ? 'DHCP' : 'No address settings');
+  return `
+    <div class="card mb-4">
+      <div class="d-flex items-center justify-between">
+        <div class="d-flex items-center gap-3">
+          <div class="card-icon text-muted" style="background:var(--in-bg)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/></svg>
+          </div>
+          <div>
+            <div class="font-bold">${esc(entry.logical_name)}</div>
+            ${entry.mac_address ? `<div class="text-sm text-muted font-mono">${esc(entry.mac_address)}</div>` : ''}
+            <div class="text-sm text-muted">Saved settings: ${esc(what)}</div>
+          </div>
+        </div>
+        <div class="d-flex items-center gap-3">
+          <span class="badge badge-warn">Not on this system</span>
+          <button class="btn btn-secondary btn-sm advanced-only" data-forget="${esc(entry.logical_name)}">Forget</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function forgetInterface(name) {
+  const safe = esc(name);
+  if (!await confirm(`Forget ${safe}?`,
+    `Its saved settings are deleted. If a card with this name comes back, it starts with DHCP.`, 'Forget')) return;
+  try {
+    await apiJSON('DELETE', `/api/network/interfaces/${encodeURIComponent(name)}`);
+    toast(`${name} forgotten.`, 'ok');
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'err');
+  }
+  await loadInterfaces();
 }
 
 function describeKind(entry) {
