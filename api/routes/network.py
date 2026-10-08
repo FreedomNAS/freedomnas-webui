@@ -172,7 +172,7 @@ async def apply_interface(logical_name: str, body: dict, username: str = Depends
         config = netconfig.normalize(body)
     except netconfig.NetConfigProblem as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
-    entry = get_config().get_interface(logical_name) or {}
+    entry = get_config().get_interface(logical_name) or {"logical_name": logical_name}
     if entry.get("master"):
         return JSONResponse(status_code=409, content={
             "detail": f"{logical_name} is a port of {entry['master']}: configure {entry['master']} instead"})
@@ -182,7 +182,7 @@ async def apply_interface(logical_name: str, body: dict, username: str = Depends
         iface["config"] = config
         cfg.add_interface(iface)
 
-    return _start(logical_name, config, netconfig.steps(logical_name, config), keep)
+    return _start(logical_name, config, netconfig.reconfigure_steps(entry, config), keep)
 
 
 @router.post("/virtual")

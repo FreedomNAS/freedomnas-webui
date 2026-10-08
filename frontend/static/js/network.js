@@ -261,6 +261,7 @@ function openEditIP(name, currentAddr) {
   setValue('f-ip6-prefix', cfg.ipv6_prefix || '64');
   setValue('f-ip6-gw', cfg.ipv6_gateway);
   setValue('f-ip-mtu', cfg.mtu);
+  setValue('f-ip-routes', (cfg.routes || []).map(r => `${r.destination} ${r.gateway}`).join('\n'));
   syncForm();
   openModal('modal-ip');
 }
@@ -290,6 +291,7 @@ async function applyConfig(e) {
     ipv6_prefix: getValue('f-ip6-prefix'),
     ipv6_gateway: getValue('f-ip6-gw'),
     mtu: getValue('f-ip-mtu'),
+    routes: getValue('f-ip-routes'),
   };
 
   setLoading(btn, true, 'Applying…');

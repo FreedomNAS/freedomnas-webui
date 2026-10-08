@@ -98,6 +98,11 @@
             </div>
           </div>
           <div class="form-group">
+            <label class="form-label" for="f-ip-routes">Static Routes</label>
+            <textarea id="f-ip-routes" class="textarea font-mono" rows="3" placeholder="10.20.0.0/16 192.168.1.254"></textarea>
+            <span class="form-hint">One per line: a network and the gateway that reaches it, through this interface. IPv6 too</span>
+          </div>
+          <div class="form-group">
             <label class="form-label" for="f-ip-mtu">MTU</label>
             <input id="f-ip-mtu" class="input" type="number" min="576" max="9216" placeholder="Automatic">
             <span class="form-hint">Empty: the interface's default. 9000 for jumbo frames, only if every device on the network supports them</span>

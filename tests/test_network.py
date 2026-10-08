@@ -230,3 +230,17 @@ def test_a_bridge_in_use_cannot_be_removed(client, cards, config):
     r = client.delete("/api/network/virtual/fnas_bond1")
     assert r.status == 409 and "fnas_vlan5" in r.body["detail"]
     assert client.delete("/api/network/virtual/fnas_lan1").status == 404
+
+
+def test_configuring_a_bridge_keeps_its_ports_and_does_not_recreate_it(client, cards, config):
+    config.add_interface({"logical_name": "fnas_bridge1", "type": "bridge", "ports": ["fnas_lan1"],
+                          "mac_address": "52:54:00:00:00:0a", "config": {"method": "dhcp"}})
+    assert client.put("/api/network/interfaces/fnas_bridge1", STATIC).status == 202
+    _applied(client)
+    actions = [a for _, a in cards.actions()]
+    assert "bridge_create" not in actions and "connection_activate" not in actions
+    assert actions[-3:] == ["mac_set", "port_activate", "virtual_activate"]
+    assert "bridge_port_add" in actions
+    client.post("/api/network/confirm")
+    assert config.get_interface("fnas_bridge1")["ports"] == ["fnas_lan1"]
+    assert config.get_interface("fnas_bridge1")["config"]["ip"] == "192.168.1.5"
