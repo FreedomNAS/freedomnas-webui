@@ -174,3 +174,59 @@ def test_a_token_does_not_confirm_while_applying(anonymous, client, checkpoint):
     r = anonymous.post("/api/network/confirm-token", {"token": "t"})
     assert r.status == 409 and "still being applied" in r.body["detail"]
     assert not checkpoint.called("network", "checkpoint_destroy")
+
+
+PHYSICAL = "fnas_lan1 52:54:00:00:00:0a fnas_lan1\nfnas_lan2 52:54:00:00:00:0b fnas_lan2\n"
+
+
+@pytest.fixture
+def cards(checkpoint):
+    checkpoint.outputs[("network", "list_physical")] = PHYSICAL
+    checkpoint.outputs[("network", "list_interfaces")] = json.dumps([{"ifname": "lo"}, {"ifname": "fnas_lan1"},
+                                                                     {"ifname": "fnas_lan2"}])
+    return checkpoint
+
+
+def test_a_bridge_is_created_and_saved_with_its_ports_on_confirm(client, cards, config):
+    config.add_interface({"logical_name": "fnas_lan1", "mac_address": "52:54:00:00:00:0a",
+                          "config": {"method": "dhcp"}})
+    r = client.post("/api/network/virtual", {"type": "bridge", "ports": ["fnas_lan1"],
+                                             "config": {"method": "dhcp"}})
+    assert r.status == 202 and r.body["entry"]["logical_name"] == "fnas_bridge1"
+    _applied(client)
+    [create] = cards.called("network", "bridge_create")
+    assert create.argv[:4] == ["nmcli", "connection", "add", "type"] and "fnas_bridge1" in create.argv
+    [mac] = cards.called("network", "mac_set")
+    assert mac.argv[-1] == "52:54:00:00:00:0a"
+    assert config.get_interface("fnas_bridge1") is None
+    assert client.post("/api/network/confirm").status == 200
+    assert config.get_interface("fnas_bridge1")["ports"] == ["fnas_lan1"]
+    port = config.get_interface("fnas_lan1")
+    assert port["master"] == "fnas_bridge1" and "config" not in port
+    assert client.put("/api/network/interfaces/fnas_lan1", STATIC).status == 409
+
+
+def test_a_bad_bridge_is_refused(client, cards):
+    r = client.post("/api/network/virtual", {"type": "bridge", "ports": ["fnas_lan7"]})
+    assert r.status == 422 and "No interface" in r.body["detail"]
+    assert not cards.called("network", "checkpoint_create")
+
+
+def test_removing_a_bridge_frees_its_ports(client, cards, config):
+    config.add_interface({"logical_name": "fnas_bridge1", "type": "bridge", "ports": ["fnas_lan1"],
+                          "config": {"method": "dhcp"}})
+    config.add_interface({"logical_name": "fnas_lan1", "master": "fnas_bridge1"})
+    assert client.delete("/api/network/virtual/fnas_bridge1").status == 202
+    _applied(client)
+    assert [a for _, a in cards.actions()] == ["checkpoint_create", "virtual_delete", "port_release"]
+    assert client.post("/api/network/confirm").status == 200
+    assert config.get_interface("fnas_bridge1") is None
+    assert "master" not in config.get_interface("fnas_lan1")
+
+
+def test_a_bridge_in_use_cannot_be_removed(client, cards, config):
+    config.add_interface({"logical_name": "fnas_bond1", "type": "bond", "ports": ["fnas_lan1", "fnas_lan2"]})
+    config.add_interface({"logical_name": "fnas_vlan5", "type": "vlan", "parent": "fnas_bond1", "vlan_id": 5})
+    r = client.delete("/api/network/virtual/fnas_bond1")
+    assert r.status == 409 and "fnas_vlan5" in r.body["detail"]
+    assert client.delete("/api/network/virtual/fnas_lan1").status == 404

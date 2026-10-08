@@ -2,6 +2,8 @@
 
 const NET_MSG = 'fnas_netmsg';
 let saved = {};
+let entries = {};
+let present = [];
 let rollbackSeconds = 90;
 let pendingTimer = null;
 
@@ -17,7 +19,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('iface-list').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-iface]');
     if (btn) openEditIP(btn.dataset.iface, btn.dataset.addr);
+    const del = e.target.closest('[data-remove]');
+    if (del) removeVirtual(del.dataset.remove);
   });
+
+  document.getElementById('btn-add-virtual').addEventListener('click', openVirtual);
+  document.getElementById('f-v-type').addEventListener('change', syncVirtual);
+  document.getElementById('v-ports').addEventListener('change', syncVirtual);
+  document.getElementById('form-virtual').addEventListener('submit', createVirtual);
+  bindModalClose('modal-virtual');
 
   document.getElementById('f-ip-method').addEventListener('change', syncForm);
   document.getElementById('f-ip6-method').addEventListener('change', syncForm);
@@ -69,10 +79,12 @@ async function loadInterfaces() {
       apiJSON('GET', '/api/network/config'),
     ]);
     saved = c.interfaces || {};
+    entries = Object.fromEntries((c.entries || []).map(e => [e.logical_name, e]));
     rollbackSeconds = c.rollback_seconds || 90;
     document.querySelectorAll('.rollback-seconds').forEach(s => { s.textContent = rollbackSeconds; });
     showBanner(c.pending);
     const ifaces = Array.isArray(d.interfaces) ? d.interfaces : Object.values(d.interfaces || {});
+    present = ifaces.map(i => i.ifname || i.name).filter(Boolean);
     if (!ifaces.length) { el.innerHTML = emptyIface(); return; }
     el.innerHTML = ifaces.map(renderIface).join('');
   } catch (e) {
@@ -96,7 +108,10 @@ function renderIface(i) {
   const isUp   = (i.operstate || i.flags || '').toLowerCase().includes('up');
   const isLo   = name === 'lo' || name.startsWith('lo');
   const cfg    = saved[name];
-  const method = cfg ? (cfg.method === 'static' ? 'Static' : 'DHCP') : '';
+  const entry  = entries[name] || {};
+  const method = entry.master ? '' : (cfg && cfg.method ? (cfg.method === 'static' ? 'Static' : 'DHCP') : '');
+  const kind   = describeKind(entry);
+  const isVirtual = ['bridge', 'bond', 'vlan'].includes(entry.type);
 
   return `
     <div class="card mb-4">
@@ -108,17 +123,20 @@ function renderIface(i) {
           <div>
             <div class="font-bold">${esc(name)}</div>
             ${mac ? `<div class="text-sm text-muted font-mono">${esc(mac)}</div>` : ''}
+            ${kind ? `<div class="text-sm text-muted">${esc(kind)}</div>` : ''}
           </div>
         </div>
         <div class="d-flex items-center gap-3">
           ${method ? `<span class="badge badge-info">${method}</span>` : ''}
           ${cfg && cfg.mtu ? `<span class="badge badge-muted expert-only">MTU ${esc(cfg.mtu)}</span>` : ''}
           <span class="badge ${isUp ? 'badge-ok' : 'badge-muted'}">${isUp ? 'UP' : 'DOWN'}</span>
-          ${!isLo ? `
+          ${!isLo && !entry.master ? `
             <button class="btn btn-secondary btn-sm advanced-only"
               data-iface="${esc(name)}" data-addr="${esc(v4 ? `${v4.local}/${v4.prefixlen}` : '')}">
               Configure
             </button>` : ''}
+          ${isVirtual ? `
+            <button class="btn btn-danger btn-sm advanced-only" data-remove="${esc(name)}">Remove</button>` : ''}
         </div>
       </div>
       ${addr.length ? `
@@ -126,6 +144,101 @@ function renderIface(i) {
           ${addr.map(a => `<div class="d-flex items-center gap-2"><span class="badge badge-info font-mono">${esc(a)}</span></div>`).join('')}
         </div>` : '<div class="text-sm text-muted">No IPv4 address assigned</div>'}
     </div>`;
+}
+
+function describeKind(entry) {
+  if (entry.master) return `Port of ${entry.master}`;
+  if (entry.type === 'bridge') return `Bridge — ports: ${(entry.ports || []).join(', ')}`;
+  if (entry.type === 'bond') return `Bond (${entry.mode === 'failover' ? 'failover' : 'LACP'}) — ports: ${(entry.ports || []).join(', ')}`;
+  if (entry.type === 'vlan') return `VLAN ${entry.vlan_id} on ${entry.parent}`;
+  return '';
+}
+
+function freeCards() {
+  return present.filter(n => n.startsWith('fnas_lan') && !(entries[n] || {}).master);
+}
+
+function openVirtual() {
+  const cards = freeCards();
+  document.getElementById('v-ports').innerHTML = cards.length
+    ? cards.map(n => `<label class="d-flex items-center gap-2"><input type="checkbox" value="${esc(n)}"> <span class="font-mono">${esc(n)}</span>${saved[n] && saved[n].method === 'static' ? ` <span class="text-sm text-muted">${esc(saved[n].ip)}</span>` : ''}</label>`).join('')
+    : '<span class="text-sm text-muted">No free network card</span>';
+  const parents = present.filter(n => (n.startsWith('fnas_lan') || n.startsWith('fnas_bond') || n.startsWith('fnas_bridge')) && !(entries[n] || {}).master);
+  document.getElementById('f-v-parent').innerHTML = parents.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  setValue('f-v-type', 'bridge');
+  setValue('f-v-mode', 'lacp');
+  setValue('f-v-id', '');
+  document.getElementById('f-v-stp').checked = false;
+  syncVirtual();
+  openModal('modal-virtual');
+}
+
+function chosenPorts() {
+  return Array.from(document.querySelectorAll('#v-ports input:checked')).map(i => i.value);
+}
+
+function syncVirtual() {
+  const type = getValue('f-v-type');
+  document.getElementById('v-ports-group').hidden = type === 'vlan';
+  document.getElementById('v-mode-group').hidden = type !== 'bond';
+  document.getElementById('v-stp-group').hidden = type !== 'bridge';
+  document.getElementById('v-vlan-group').hidden = type !== 'vlan';
+  document.getElementById('v-ports-hint').textContent = type === 'bond'
+    ? 'At least two. The bond uses the MAC address of the first one'
+    : 'The bridge uses the MAC address of the first one, so a DHCP reservation on your router keeps working';
+  const first = chosenPorts()[0];
+  document.getElementById('v-address-note').textContent = type === 'vlan'
+    ? 'The VLAN gets its address by DHCP; change it afterwards with Configure.'
+    : first
+      ? `The new interface takes over the address settings of ${first}; the cards become its ports and have no address of their own.`
+      : 'Choose the network cards.';
+}
+
+async function createVirtual(e) {
+  e.preventDefault();
+  const btn = document.getElementById('btn-v-submit');
+  const type = getValue('f-v-type');
+  const ports = chosenPorts();
+  const body = { type };
+  if (type === 'vlan') {
+    body.parent = getValue('f-v-parent');
+    body.vlan_id = getValue('f-v-id');
+    body.config = { method: 'dhcp' };
+  } else {
+    body.ports = ports;
+    body.mode = getValue('f-v-mode');
+    body.stp = document.getElementById('f-v-stp').checked;
+    body.config = (ports[0] && saved[ports[0]]) || { method: 'dhcp' };
+  }
+  setLoading(btn, true, 'Creating…');
+  let started;
+  try {
+    started = await apiJSON('POST', '/api/network/virtual', body);
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'err');
+    return;
+  } finally {
+    setLoading(btn, false);
+  }
+  closeModal('modal-virtual');
+  followPending(null, false);
+}
+
+async function removeVirtual(name) {
+  const entry = entries[name] || {};
+  const ports = esc((entry.ports || []).join(', '));
+  const safe = esc(name);
+  const ok = await confirm(`Remove ${safe}?`,
+    ports ? `${ports} go back to getting an address by DHCP. If you are connected through ${safe}, the address may change.`
+          : `Anything using ${safe} loses its connection.`, 'Remove');
+  if (!ok) return;
+  try {
+    await apiJSON('DELETE', `/api/network/virtual/${encodeURIComponent(name)}`);
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'err');
+    return;
+  }
+  followPending(null, true);
 }
 
 function setValue(id, v) { document.getElementById(id).value = v ?? ''; }

@@ -7,6 +7,8 @@ GET  /config                  — saved configuration of each interface, and any
 PUT  /interfaces/{name}       — apply a configuration under a checkpoint (202, pending)
 GET  /pending                 — the change waiting for confirmation, if any
 POST /confirm                 — keep the pending change and save it
+POST /virtual                 — create a bridge, bond or VLAN under a checkpoint (202, pending)
+DELETE /virtual/{name}        — remove one under a checkpoint (202, pending)
 POST /revert                  — undo the pending change now
 POST /confirm-token           — keep it, from a browser that reached the new address
                                  (no login: the one-time token PUT returned is the proof)
@@ -26,7 +28,7 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from freedomnas import netconfig
+from freedomnas import netconfig, netnames
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -100,9 +102,9 @@ def _pending_view() -> dict:
                 "seconds_left": left, "config": _pending["config"], "error": _pending.get("error")}
 
 
-def _activate(engine, name: str, config: dict, checkpoint: str) -> None:
+def _activate(engine, plan: list, checkpoint: str) -> None:
     try:
-        netconfig.apply(engine, name, config)
+        netconfig.run(engine, plan)
     except (CommandExecutionError, CommandTranslationError) as exc:
         try:
             netconfig.checkpoint_rollback(engine, checkpoint)
@@ -117,12 +119,48 @@ def _activate(engine, name: str, config: dict, checkpoint: str) -> None:
             _pending["state"] = "waiting"
 
 
+def _start(name: str, config: dict, plan: list, keep) -> JSONResponse:
+    """Run `plan` under a checkpoint; `keep(cfg)` records it in config.yaml once confirmed."""
+    view = _pending_view()
+    if view["pending"] and view["state"] != "failed":
+        return JSONResponse(status_code=409, content={
+            "detail": "Another network change is waiting for confirmation"})
+    engine = get_engine()
+    try:
+        checkpoint = netconfig.checkpoint_create(engine, ROLLBACK_SECONDS)
+    except (CommandExecutionError, CommandTranslationError, netconfig.NetConfigProblem) as exc:
+        return JSONResponse(status_code=500, content={
+            "detail": f"Not applied: the safety checkpoint could not be created ({exc})"})
+    with _lock:
+        _pending.clear()
+        token = secrets.token_urlsafe(24)
+        _pending.update(interface=name, config=config, checkpoint=checkpoint, token=token, keep=keep,
+                        state="applying", deadline=time.monotonic() + ROLLBACK_SECONDS)
+    threading.Thread(target=_activate, args=(engine, plan, checkpoint), daemon=True).start()
+    return JSONResponse(status_code=202, content=dict(_pending_view(), token=token))
+
+
+def _present(engine) -> dict:
+    """Interfaces on this system → MAC address."""
+    stdout, _ = engine.execute("network", "list_physical")
+    present = {c["name"]: c["mac"] for c in netnames.parse_physical(stdout)}
+    try:
+        stdout, _ = engine.execute("network", "list_interfaces")
+        for link in json.loads(stdout):
+            if isinstance(link, dict) and link.get("ifname"):
+                present.setdefault(link["ifname"], link.get("address") or "")
+    except (ValueError, TypeError):
+        pass
+    return present
+
+
 @router.get("/config")
 async def network_config(username: str = Depends(authenticate)):
     config = get_config()
-    saved = {i["logical_name"]: i.get("config") or {}
-             for i in config.get_interfaces() if i.get("logical_name")}
-    return {"interfaces": saved, "rollback_seconds": ROLLBACK_SECONDS, "pending": _pending_view()}
+    entries = [i for i in config.get_interfaces() if i.get("logical_name")]
+    saved = {i["logical_name"]: i.get("config") or {} for i in entries}
+    return {"interfaces": saved, "entries": entries, "rollback_seconds": ROLLBACK_SECONDS,
+            "pending": _pending_view()}
 
 
 @router.put("/interfaces/{logical_name}")
@@ -134,25 +172,66 @@ async def apply_interface(logical_name: str, body: dict, username: str = Depends
         config = netconfig.normalize(body)
     except netconfig.NetConfigProblem as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
-    view = _pending_view()
-    if view["pending"] and view["state"] != "failed":
+    entry = get_config().get_interface(logical_name) or {}
+    if entry.get("master"):
         return JSONResponse(status_code=409, content={
-            "detail": "Another network change is waiting for confirmation"})
+            "detail": f"{logical_name} is a port of {entry['master']}: configure {entry['master']} instead"})
 
+    def keep(cfg):
+        iface = cfg.get_interface(logical_name) or {"logical_name": logical_name}
+        iface["config"] = config
+        cfg.add_interface(iface)
+
+    return _start(logical_name, config, netconfig.steps(logical_name, config), keep)
+
+
+@router.post("/virtual")
+async def create_virtual(body: dict, username: str = Depends(authenticate)):
     engine = get_engine()
     try:
-        checkpoint = netconfig.checkpoint_create(engine, ROLLBACK_SECONDS)
-    except (CommandExecutionError, CommandTranslationError, netconfig.NetConfigProblem) as exc:
-        return JSONResponse(status_code=500, content={
-            "detail": f"Not applied: the safety checkpoint could not be created ({exc})"})
-    with _lock:
-        _pending.clear()
-        token = secrets.token_urlsafe(24)
-        _pending.update(interface=logical_name, config=config, checkpoint=checkpoint, token=token,
-                        state="applying", deadline=time.monotonic() + ROLLBACK_SECONDS)
-    threading.Thread(target=_activate, args=(engine, logical_name, config, checkpoint),
-                     daemon=True).start()
-    return JSONResponse(status_code=202, content=dict(_pending_view(), token=token))
+        entry = netconfig.normalize_virtual(body, get_config().get_interfaces(), _present(engine))
+    except netconfig.NetConfigProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    def keep(cfg):
+        for port in entry.get("ports") or []:
+            iface = cfg.get_interface(port) or {"logical_name": port}
+            iface.pop("config", None)
+            iface["master"] = entry["logical_name"]
+            cfg.add_interface(iface)
+        cfg.add_interface(dict(entry))
+
+    response = _start(entry["logical_name"], entry["config"], netconfig.virtual_steps(entry), keep)
+    if response.status_code == 202:
+        body = json.loads(response.body)
+        body["entry"] = entry
+        return JSONResponse(status_code=202, content=body)
+    return response
+
+
+@router.delete("/virtual/{logical_name}")
+async def delete_virtual(logical_name: str, username: str = Depends(authenticate)):
+    cfg = get_config()
+    entry = cfg.get_interface(logical_name)
+    if not entry or entry.get("type") not in netconfig.VIRTUAL_TYPES:
+        return JSONResponse(status_code=404, content={"detail": f"No bridge, bond or VLAN named {logical_name}"})
+    users = [i["logical_name"] for i in cfg.get_interfaces()
+             if i.get("parent") == logical_name or i.get("master") == logical_name and i["logical_name"] not in (entry.get("ports") or [])]
+    if users:
+        return JSONResponse(status_code=409, content={
+            "detail": f"{logical_name} is still used by {', '.join(users)}"})
+
+    def keep(c):
+        for port in entry.get("ports") or []:
+            iface = c.get_interface(port)
+            if iface is not None:
+                iface.pop("master", None)
+                c.add_interface(iface)
+        c.remove_interface(logical_name)
+
+    return _start(logical_name, {}, netconfig.virtual_remove_steps(entry), keep)
 
 
 @router.get("/pending")
@@ -188,7 +267,8 @@ def _confirm():
         return JSONResponse(status_code=409, content={
             "detail": view.get("error") or "The change is still being applied"})
     with _lock:
-        checkpoint, name, config = _pending["checkpoint"], _pending["interface"], _pending["config"]
+        checkpoint, name, config, keep = (_pending["checkpoint"], _pending["interface"],
+                                          _pending["config"], _pending["keep"])
     engine = get_engine()
     try:
         netconfig.checkpoint_confirm(engine, checkpoint)
@@ -200,10 +280,7 @@ def _confirm():
     with _lock:
         _pending.clear()
     try:
-        cfg = get_config()
-        iface = cfg.get_interface(name) or {"logical_name": name}
-        iface["config"] = config
-        cfg.add_interface(iface)
+        keep(get_config())
     except ConfigurationException as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": f"Network configuration of {name} kept", "config": config}
