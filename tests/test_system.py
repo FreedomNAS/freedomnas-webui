@@ -205,7 +205,7 @@ def test_health_asks_every_module(client, engine, config, core_modules):
     report = {m["id"]: (m["state"], m["detail"]) for m in r.body["modules"]}
     assert report["storage"] == ("unhealthy", "tank is DEGRADED")
     assert report["network"] == ("healthy", "eth0 up")
-    assert report["shares"] == ("healthy", "no share services enabled")
+    assert report["shares"] == ("healthy", "no shares, no share services enabled")
     assert report["updates"][0] == "healthy"
     assert set(report) == {"network", "shares", "storage", "updates", "users"}
 

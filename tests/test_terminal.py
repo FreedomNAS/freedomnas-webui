@@ -94,7 +94,7 @@ def test_an_update_snapshots_every_pool_then_streams_topgrade(server, engine, co
     assert all(c.kwargs["snap_name"].startswith("pre-update-") for c in snapshots)
 
     assert launched == [["su", "-", "admin", "-c",
-                         "topgrade --yes --config /etc/freedomnas/topgrade.toml"]]
+                         "DEBIAN_FRONTEND=noninteractive topgrade --yes --config /etc/freedomnas/topgrade.toml"]]
     lines = [(m["stream"], m["line"]) for m in messages if "line" in m]
     # Nobody went through /configure here, so the defaults are written first.
     assert lines[0][1].startswith("Wrote default configuration to ")
@@ -157,4 +157,31 @@ def test_a_failed_snapshot_warns_but_the_update_runs(server, engine, config, lau
     lines = [m.get("line", "") for m in messages]
     assert any("snapshot of tank failed" in line for line in lines)
     assert any(line.startswith("Snapshot created: backup@") for line in lines)
+    assert len(launched) == 1
+
+
+def test_the_boot_image_is_backed_up_after_the_snapshot(server, engine, config, launched):
+    config.add_pool({"name": "tank"})
+    engine.outputs[("bootloader", "uki_backup")] = "zz-dracut-uki: copied the UKI\n"
+    messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    snap = engine.called("zfs", "snapshot_create_recursive")[0].kwargs["snap_name"]
+    backups = engine.called("bootloader", "uki_backup")
+    assert [c.command for c in backups] == [
+        f"/usr/lib/freedomnas/profiles/assets/zz-dracut-uki --backup {snap}"]
+    actions = engine.actions()
+    assert actions.index(("bootloader", "uki_backup")) > actions.index(("zfs", "snapshot_create_recursive"))
+    assert ("stdout", "zz-dracut-uki: copied the UKI") in [(m["stream"], m["line"]) for m in messages if "line" in m]
+
+
+def test_without_a_snapshot_the_boot_image_is_still_backed_up(server, engine, config, launched):
+    config.set("updates.topgrade.auto_snapshot", False)
+    session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert [c.kwargs["snapshot"] for c in engine.called("bootloader", "uki_backup")] == [""]
+
+
+def test_a_failed_boot_image_backup_warns_but_the_update_runs(server, engine, config, launched):
+    from freedomnas.engine import CommandExecutionError
+    engine.outputs[("bootloader", "uki_backup")] = CommandExecutionError("ESP full")
+    messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert any("boot image was not backed up" in m.get("line", "") for m in messages)
     assert len(launched) == 1

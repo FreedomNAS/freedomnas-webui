@@ -161,6 +161,7 @@ async def updates_terminal(websocket: WebSocket):
         await _send(websocket, "stderr", f"Warning: could not write topgrade.toml: {exc}")
 
     # Pre-update snapshot (spec §7.7)
+    snap_name = ""
     if config.get("updates.topgrade.auto_snapshot", True):
         snap_name = f"pre-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         for pool in _pools_to_snapshot(engine, config):
@@ -169,6 +170,15 @@ async def updates_terminal(websocket: WebSocket):
                 await _send(websocket, "stdout", f"Snapshot created: {pool}@{snap_name} (recursive)")
             except (CommandExecutionError, CommandTranslationError) as exc:
                 await _send(websocket, "stderr", f"Warning: snapshot of {pool} failed: {exc}")
+
+    try:
+        stdout, _ = engine.execute("bootloader", "uki_backup", snapshot=snap_name)
+        for line in stdout.splitlines():
+            await _send(websocket, "stdout", line)
+    except CommandTranslationError:
+        pass
+    except CommandExecutionError as exc:
+        await _send(websocket, "stderr", f"Warning: the boot image was not backed up: {exc}")
 
     # Launch topgrade via asyncio (spec §7.7 — no shell=True, no subprocess.run)
     args = shlex.split(command)
