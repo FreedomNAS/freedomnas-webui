@@ -216,3 +216,53 @@ def test_a_module_that_breaks_is_reported_not_raised(client, engine, config, cor
     assert r.status == 200
     [storage] = [m for m in r.body["modules"] if m["id"] == "storage"]
     assert storage == {"id": "storage", "name": "Storage", "state": "error", "detail": "zpool exploded"}
+
+
+ROLLED_BACK = """autorollback: yes
+state: ok
+failed-kernel: 6.18.60-1-freedomnas
+restored-kernel: 6.18.54-3-freedomnas
+reason: the initramfs reached the emergency shell
+date: 20261009-101500
+snapshot: rpool/ROOT/debian@pre-update-20261009-100000
+fs-rollback: yes
+failed-dataset: rpool/ROOT/debian-failed-20261009-101500
+"""
+
+
+def test_the_boot_status_reports_the_last_rollback(client, engine, config):
+    engine.outputs[("bootloader", "boot_state")] = ROLLED_BACK
+    body = client.get("/api/system/boot").body
+    assert body["supported"] and body["autorollback"] and body["state"] == "ok"
+    assert body["rollback"]["failed_kernel"] == "6.18.60-1-freedomnas"
+    assert body["rollback"]["failed_dataset"] == "rpool/ROOT/debian-failed-20261009-101500"
+    assert body["rollback"]["system_restored"] is True
+
+
+def test_turning_the_rollback_off_writes_the_esp_and_the_configuration(client, engine, config):
+    r = client.post("/api/system/boot/autorollback", {"enabled": False})
+    assert r.status == 200 and r.body["autorollback"] is False
+    sets = engine.called("bootloader", "autorollback_set")
+    assert [c.command for c in sets] == ["/usr/lib/freedomnas/profiles/assets/zz-dracut-uki --autorollback no"]
+    assert config.get("system.autorollback") is False
+
+
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_the_rollback_setting_wants_a_boolean(client, engine, value):
+    assert client.post("/api/system/boot/autorollback", {"enabled": value}).status == 422
+
+
+def test_dismissing_keeps_the_failed_system(client, engine, config):
+    engine.outputs[("bootloader", "boot_state")] = ROLLED_BACK
+    r = client.post("/api/system/boot/forget", {})
+    assert r.status == 200 and r.body["destroyed"] is None
+    assert engine.called("zfs", "dataset_destroy_recursive") == []
+    assert len(engine.called("bootloader", "rollback_forget")) == 1
+
+
+def test_the_failed_system_can_be_deleted(client, engine, config):
+    engine.outputs[("bootloader", "boot_state")] = ROLLED_BACK
+    r = client.post("/api/system/boot/forget", {"destroy_failed": True})
+    assert r.status == 200 and r.body["destroyed"] == "rpool/ROOT/debian-failed-20261009-101500"
+    assert [c.argv for c in engine.called("zfs", "dataset_destroy_recursive")] == [
+        ["zfs", "destroy", "-r", "rpool/ROOT/debian-failed-20261009-101500"]]

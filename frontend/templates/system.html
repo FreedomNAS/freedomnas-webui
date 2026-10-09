@@ -79,6 +79,23 @@
   </div>
 </div>
 
+<!-- Automatic rollback (Expert) -->
+<div class="section expert-only" id="autorollback-section" hidden>
+  <div class="section-header"><span class="section-title">Automatic rollback</span></div>
+  <div class="card" style="max-width:480px">
+    <label class="checkbox-group">
+      <input id="f-autorollback" type="checkbox">
+      <span>Roll back a kernel update that does not boot</span>
+    </label>
+    <span class="form-hint" style="display:block;margin-top:8px">
+      After a kernel update, if the new kernel ends in the emergency shell or does not
+      finish booting three times, the previous kernel comes back by itself and the system
+      files return to the snapshot taken before the update. Your data pools are never touched.
+    </span>
+    <span class="form-hint" id="autorollback-state" style="display:block;margin-top:8px"></span>
+  </div>
+</div>
+
 <!-- Danger zone -->
 <div class="section">
   <div class="section-header"><span class="section-title">Power</span></div>

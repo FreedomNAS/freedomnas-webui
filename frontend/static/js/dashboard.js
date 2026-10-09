@@ -2,8 +2,49 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!initShared()) return;
-  await Promise.all([loadSystemInfo(), loadUpdateStatus(), loadModuleHealth()]);
+  await Promise.all([loadSystemInfo(), loadUpdateStatus(), loadModuleHealth(), loadRollback()]);
 });
+
+function formatStamp(stamp) {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(stamp || '');
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (stamp || '');
+}
+
+async function loadRollback() {
+  const banner = document.getElementById('rollback-banner');
+  if (!banner) return;
+  let d;
+  try { d = await apiJSON('GET', '/api/system/boot'); } catch { return; }
+  const r = d.rollback;
+  if (!r) { banner.hidden = true; return; }
+  const restored = r.system_restored
+    ? ` The system files were restored from the snapshot taken before the update${r.failed_dataset ? `; the failed system is kept as ${r.failed_dataset}` : ''}.`
+    : ' The system files were left as they were.';
+  document.getElementById('rollback-text').textContent =
+    `On ${formatStamp(r.date)} kernel ${r.failed_kernel} did not boot (${r.reason || 'unknown reason'}), ` +
+    `so FreedomNAS went back to kernel ${r.restored_kernel || 'the previous one'}.${restored} ` +
+    `That kernel stays out of use until this notice is dismissed.`;
+  const destroy = document.getElementById('btn-rollback-destroy');
+  destroy.hidden = !r.failed_dataset;
+  banner.hidden = false;
+
+  destroy.onclick = async () => {
+    if (!await confirm('Delete the failed system',
+        `${r.failed_dataset} and its snapshots will be destroyed. The running system is not touched.`, 'Delete')) return;
+    await forgetRollback(true);
+  };
+  document.getElementById('btn-rollback-dismiss').onclick = () => forgetRollback(false);
+}
+
+async function forgetRollback(destroyFailed) {
+  try {
+    const d = await apiJSON('POST', '/api/system/boot/forget', { destroy_failed: destroyFailed });
+    toast(d.destroyed ? `${d.destroyed} deleted.` : 'Notice dismissed.', 'ok');
+    document.getElementById('rollback-banner').hidden = true;
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'err');
+  }
+}
 
 async function loadSystemInfo() {
   try {

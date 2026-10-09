@@ -57,6 +57,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  loadAutorollback();
+
   document.getElementById('btn-reboot')?.addEventListener('click', async () => {
     if (!await confirm('Reboot System', 'The system will reboot. All active sessions will be disconnected.', 'Reboot')) return;
     try {
@@ -77,6 +79,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 });
+
+const BOOT_STATES = {
+  ok: 'The running kernel booted normally.',
+  trial: 'A new kernel is on trial: it is confirmed once the system has finished booting.',
+  'fallback-requested': 'A rollback is in progress.',
+  'rolled-back': 'The last kernel update was rolled back.',
+};
+
+async function loadAutorollback() {
+  const section = document.getElementById('autorollback-section');
+  const box = document.getElementById('f-autorollback');
+  if (!section || !box) return;
+  let d;
+  try { d = await apiJSON('GET', '/api/system/boot'); } catch { return; }
+  if (!d.supported) return;
+  section.hidden = false;
+  box.checked = !!d.autorollback;
+  document.getElementById('autorollback-state').textContent = BOOT_STATES[d.state] || '';
+  box.addEventListener('change', async () => {
+    const wanted = box.checked;
+    box.disabled = true;
+    try {
+      await apiJSON('POST', '/api/system/boot/autorollback', { enabled: wanted });
+      toast(wanted ? 'Automatic rollback is on.' : 'Automatic rollback is off.', 'ok');
+    } catch (e) {
+      box.checked = !wanted;
+      toast(`Error: ${e.message}`, 'err');
+    } finally {
+      box.disabled = false;
+    }
+  });
+}
 
 async function loadSystemInfo() {
   try {

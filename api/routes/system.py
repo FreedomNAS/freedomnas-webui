@@ -9,6 +9,10 @@ POST /hostname — set hostname
 POST /timezone — set timezone
 GET  /ssh      — whether SSH is enabled
 POST /ssh      — enable or disable SSH
+GET  /boot     — automatic rollback: setting, boot state, last rollback
+POST /boot/autorollback — turn the automatic rollback on or off
+POST /boot/forget       — clear the record of a rollback, optionally
+                          destroying the failed root dataset it kept
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
 GET  /config   — download this appliance's configuration
@@ -28,7 +32,7 @@ from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
 from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
-from freedomnas import shadow
+from freedomnas import bootstate, shadow
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -185,6 +189,41 @@ async def set_timezone(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"timezone": timezone}
+
+
+@router.get("/boot")
+async def boot_status(username: str = Depends(authenticate)):
+    return bootstate.summary(get_engine(), get_config())
+
+
+@router.post("/boot/autorollback")
+async def set_autorollback(body: dict, username: str = Depends(authenticate)):
+    if not isinstance(body.get("enabled"), bool):
+        return JSONResponse(status_code=422, content={"detail": "enabled must be true or false"})
+    engine = get_engine()
+    config = get_config()
+    if bootstate.read_state(engine) is None:
+        return JSONResponse(status_code=409, content={"detail": "This edition does not boot a UKI"})
+    try:
+        bootstate.set_autorollback(engine, config, body["enabled"])
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return bootstate.summary(engine, config)
+
+
+@router.post("/boot/forget")
+async def forget_rollback(body: dict, username: str = Depends(authenticate)):
+    destroy = body.get("destroy_failed", False)
+    if not isinstance(destroy, bool):
+        return JSONResponse(status_code=422, content={"detail": "destroy_failed must be true or false"})
+    engine = get_engine()
+    if bootstate.read_state(engine) is None:
+        return JSONResponse(status_code=409, content={"detail": "This edition does not boot a UKI"})
+    try:
+        destroyed = bootstate.forget(engine, destroy)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"destroyed": destroyed, **bootstate.summary(engine, get_config())}
 
 
 @router.post("/reboot")
