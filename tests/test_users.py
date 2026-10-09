@@ -66,6 +66,7 @@ def test_creating_a_user_creates_it_then_sets_its_password(client, engine, confi
     assert r.status == 200
     assert r.body == {"username": "carla"}
     assert engine.actions() == [
+        ("users", "group_exists"),
         ("users", "create"),
         ("users", "set_password_stdin"),
         ("samba", "check_installed"),
@@ -163,3 +164,25 @@ def test_an_account_that_already_existed_is_never_deleted(client, engine, config
     assert client.post("/api/users/", {"username": "carla", "password": "a long password"}).status == 500
     assert engine.called("users", "delete") == []
     assert engine.called("samba", "delete_user") == []
+
+
+def test_an_administrator_joins_the_admin_groups_this_system_has(client, engine, config):
+    engine.outputs[("users", "group_exists")] = lambda group, **_: "docker:x:970:\n" if group == "docker" else ""
+    r = client.post(
+        "/api/users/",
+        {"username": "carla", "password": "a long password", "groups": ["sudo"]},
+    )
+    assert r.status == 200
+    [create] = engine.called("users", "create")
+    assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "sudo,docker", "carla"]
+    assert next(u for u in config.get_users() if u["username"] == "carla")["groups"] == ["sudo", "docker"]
+
+
+def test_an_ordinary_user_joins_no_admin_group(client, engine, config):
+    engine.outputs[("users", "group_exists")] = "docker:x:970:\n"
+    assert client.post(
+        "/api/users/",
+        {"username": "mario", "password": "a long password", "groups": ["users"]},
+    ).status == 200
+    [create] = engine.called("users", "create")
+    assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "users", "mario"]

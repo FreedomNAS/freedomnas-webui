@@ -28,13 +28,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   let restored = null;
+  let passwordChosen = false;
   try {
     const res = await fetch('/api/setup/status');
     const d = await res.json();
     if (d.initialized) { location.href = '/dashboard/'; return; }
+    passwordChosen = !!d.password_chosen;
     if (d.restored) restored = await (await api('GET', '/api/setup/restored')).json();
   } catch { /* proceed */ }
 
+  if (passwordChosen) {
+    document.getElementById('shipped-password-note').hidden = true;
+    document.getElementById('admin-pass-hint').textContent =
+      'At least 8 characters. The one you chose in the installer is fine.';
+  }
   document.getElementById('f-admin-name').placeholder = login;
   document.getElementById('admin-name-hint').textContent = `Leave empty to keep "${login}".`;
   document.getElementById('remove-default-label').textContent = `Remove the account "${login}"`;
@@ -65,7 +72,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else clearErr('f-admin-name');
     if (pass.length < MIN_PASSWORD) {
       fieldErr('f-admin-pass', `At least ${MIN_PASSWORD} characters.`); ok = false;
-    } else if (btoa(`${login}:${pass}`) === auth) {
+    } else if (!passwordChosen && btoa(`${login}:${pass}`) === auth) {
       fieldErr('f-admin-pass', 'Choose a new password, not the one you signed in with.'); ok = false;
     } else clearErr('f-admin-pass');
     if (pass2 !== pass) { fieldErr('f-admin-pass2', 'The passwords differ.'); ok = false; }

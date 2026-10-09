@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
+from freedomnas.package_manager import admin_groups_present
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -128,6 +129,8 @@ def create_account(engine, config, new_user: str, password: str, groups=(),
     Raises on failure; an account that failed after useradd is taken back.
     """
     groups = list(groups)
+    if engine.get_profile_value("users", "sudo_group") in groups:
+        groups += [g for g in admin_groups_present(engine) if g not in groups]
     engine.execute(
         "users", "create_with_uid" if uid else "create",
         username=new_user,

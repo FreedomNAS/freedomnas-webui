@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas import shadow, usershares
+from freedomnas.package_manager import admin_groups_present
 from api.deps import _basic_credentials, authenticate, get_config, get_engine
 from api.routes import storage
 from api.routes.system import timezone_problem
@@ -51,14 +52,14 @@ _USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
-def _admin_problem(admin: dict, login: str, login_password: str) -> Optional[str]:
+def _admin_problem(admin: dict, login: str, login_password: str, chosen: bool = False) -> Optional[str]:
     name = (admin.get("username") or "").strip() or login
     password = admin.get("password") or ""
     if not _USERNAME.match(name):
         return "The administrator's name starts with a lowercase letter and holds lowercase letters, digits, _ and -"
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"The administrator's password must be at least {MIN_PASSWORD_LENGTH} characters"
-    if password == login_password:
+    if password == login_password and not chosen:
         return "Choose a new password: the one this system started with cannot stay"
     return _credentials_problem(name, password) or None
 
@@ -77,14 +78,24 @@ def _account_exists(engine, name: str) -> bool:
 
 
 def _as_admin(config, name: str, sudo_group: str) -> dict:
-    """The user's entry, restored fields kept, as an administrator."""
+    """
+    The user's entry, restored fields kept, as an administrator — who also
+    joins the administrators' groups this system has (`docker`, for the
+    containers step of an update), which a configuration restored from
+    another edition does not name.
+    """
+    engine = get_engine()
     entry = next((dict(u) for u in config.get_users() if u.get("username") == name), {"username": name})
     groups = list(entry.get("groups") or [])
     if sudo_group not in groups:
         groups.append(sudo_group)
+    for group in admin_groups_present(engine):
+        if group not in groups:
+            engine.execute("users", "add_to_group", username=name, group=group, check=False)
+            groups.append(group)
     entry.update(groups=groups, admin=True)
     if "uid" not in entry:
-        entry.update(account_ids(get_engine(), name))
+        entry.update(account_ids(engine, name))
     return entry
 
 
@@ -138,6 +149,7 @@ async def setup_status():
     return {
         "initialized": not config.needs_setup(),
         "restored": _restoring(config),
+        "password_chosen": config.setup_pending_kind() == "install",
         "edition": config.get_edition(),
         "detected_edition": get_engine().os_type,
     }
@@ -215,7 +227,7 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
     _, login_password = _basic_credentials(request)
-    problem = _admin_problem(admin, username, login_password)
+    problem = _admin_problem(admin, username, login_password, config.setup_pending_kind() == "install")
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
     if not state_pool:
@@ -273,7 +285,7 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
     """
     admin = body.get("admin") or {}
     _, login_password = _basic_credentials(request)
-    problem = _admin_problem(admin, username, login_password)
+    problem = _admin_problem(admin, username, login_password, config.setup_pending_kind() == "install")
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
     if not isinstance(body.get("ssh", False), bool):

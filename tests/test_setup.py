@@ -35,8 +35,8 @@ def body(**changes):
 def test_status_before_setup(anonymous, fresh_config):
     r = anonymous.get("/api/setup/status")
     assert r.status == 200
-    assert r.body == {"initialized": False, "restored": False, "edition": None,
-                      "detected_edition": "debian"}
+    assert r.body == {"initialized": False, "restored": False, "password_chosen": False,
+                      "edition": None, "detected_edition": "debian"}
 
 
 def test_the_wizard_needs_the_administrators_credentials(anonymous, engine, fresh_config):
@@ -65,6 +65,7 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
         ("users", "set_password_stdin"),
         ("samba", "check_installed"),
         ("samba", "set_user_password"),
+        ("users", "group_exists"),
         ("users", "get_user_info"),
     ]
     [password] = engine.called("users", "set_password_stdin")
@@ -300,3 +301,34 @@ def test_a_fresh_setup_clears_the_pending_file(admin, setup_pending_file):
     setup_pending_file.touch()
     assert admin.post("/api/setup/initialize", body()).status == 200
     assert not setup_pending_file.exists()
+
+
+def test_an_image_needs_a_new_password(admin, setup_pending_file):
+    setup_pending_file.touch()
+    r = admin.post("/api/setup/initialize", body(admin={"password": LOGIN_PASSWORD}))
+    assert r.status == 422
+    assert setup_pending_file.exists()
+
+
+def test_an_installation_keeps_the_password_chosen_in_the_installer(admin, setup_pending_file):
+    setup_pending_file.write_text("install\n")
+    assert admin.get("/api/setup/status").body["password_chosen"] is True
+    r = admin.post("/api/setup/initialize", body(admin={"password": LOGIN_PASSWORD}))
+    assert r.status == 200
+    assert not setup_pending_file.exists()
+
+
+def test_a_restore_after_an_installation_keeps_the_chosen_password(
+        restored, engine, setup_pending_file):
+    setup_pending_file.write_text("install\n")
+    r = restored.post("/api/setup/initialize", {"admin": {"password": LOGIN_PASSWORD}})
+    assert r.status == 200
+    assert not setup_pending_file.exists()
+
+
+def test_the_administrator_joins_the_admin_groups_this_system_has(admin, engine, fresh_config):
+    engine.outputs[("users", "group_exists")] = lambda group, **_: "docker:x:970:\n" if group == "docker" else ""
+    assert admin.post("/api/setup/initialize", body()).status == 200
+    [joined] = engine.called("users", "add_to_group")
+    assert joined.kwargs == {"username": "admin", "group": "docker"}
+    assert next(u for u in fresh_config.get_users() if u["username"] == "admin")["groups"] == ["sudo", "docker"]
