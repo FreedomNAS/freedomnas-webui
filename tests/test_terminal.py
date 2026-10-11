@@ -185,3 +185,12 @@ def test_a_failed_boot_image_backup_warns_but_the_update_runs(server, engine, co
     messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
     assert any("boot image was not backed up" in m.get("line", "") for m in messages)
     assert len(launched) == 1
+
+
+def test_the_end_of_an_update_tells_the_page_about_restart_and_reboot(server, engine, config, launched, monkeypatch):
+    import api.restart as restart
+    monkeypatch.setattr(restart, "fingerprint", lambda roots=None: "changed")
+    engine.outputs[("bootloader", "boot_state")] = "state: trial\nactive-kernel: 9.9.9-new\n"
+    messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert messages[-2:] == [{"restart_needed": True, "reboot_needed": True}, {"exit_code": 3}]
+    assert terminal.running == 0

@@ -13,6 +13,10 @@ GET  /boot     — automatic rollback: setting, boot state, last rollback
 POST /boot/autorollback — turn the automatic rollback on or off
 POST /boot/forget       — clear the record of a rollback, optionally
                           destroying the failed root dataset it kept
+GET  /webui    — whether the WebUI must restart to use updated files, and
+                 the work a restart would cut off
+POST /webui/restart — restart the WebUI; refused while an update runs, and
+                 while other jobs run unless {"force": true}
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
 GET  /config   — download this appliance's configuration
@@ -32,8 +36,10 @@ from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
 from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
-from freedomnas import bootstate, shadow
+from freedomnas import bootstate, replication, shadow
+from api import restart
 from api.deps import authenticate, get_config, get_engine
+from websocket import terminal
 
 router = APIRouter()
 
@@ -224,6 +230,42 @@ async def forget_rollback(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"destroyed": destroyed, **bootstate.summary(engine, get_config())}
+
+
+def _busy() -> dict:
+    return {
+        "updates": terminal.running,
+        "replication": sum(1 for job in replication.jobs() if job.get("state") == "running"),
+    }
+
+
+@router.get("/webui")
+async def webui_state(username: str = Depends(authenticate)):
+    return {
+        "started": restart.STARTED,
+        "restart_needed": await asyncio.to_thread(restart.restart_needed),
+        "busy": _busy(),
+    }
+
+
+@router.post("/webui/restart")
+async def webui_restart(body: dict = None, username: str = Depends(authenticate)):
+    body = body or {}
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        return JSONResponse(status_code=422, content={"detail": "force must be true or false"})
+    busy = _busy()
+    if busy["updates"]:
+        return JSONResponse(status_code=409, content={
+            "detail": "An update is running: restart the WebUI once it has finished", "busy": busy})
+    if busy["replication"] and not force:
+        return JSONResponse(status_code=409, content={
+            "detail": "Replication jobs are running: a restart stops them", "busy": busy})
+    try:
+        restart.request_restart(get_engine())
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"detail": "Restarting", "started": restart.STARTED}
 
 
 @router.post("/reboot")

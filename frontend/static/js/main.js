@@ -287,6 +287,127 @@ function loadUserBadge() {
   if (av) av.textContent = u.slice(0, 1).toUpperCase();
 }
 
+// ── Notices: restart the WebUI, reboot the system ────────────────────────────
+// Shown on every page until acted on: FreedomNAS was updated and the WebUI
+// still runs the old code, or a new kernel waits for a reboot. Neither
+// happens by itself, so running jobs can finish first.
+const Notices = {
+  interval: 120000,
+  _timer: null,
+
+  box() {
+    let box = document.getElementById('global-notices');
+    if (!box) {
+      const content = document.querySelector('.page-content');
+      if (!content) return null;
+      box = document.createElement('div');
+      box.id = 'global-notices';
+      content.prepend(box);
+    }
+    return box;
+  },
+
+  async refresh() {
+    const box = this.box();
+    if (!box) return;
+    const [webui, boot] = await Promise.all([
+      apiJSON('GET', '/api/system/webui').catch(() => null),
+      apiJSON('GET', '/api/system/boot').catch(() => null),
+    ]);
+    box.replaceChildren();
+    if (webui && webui.restart_needed) {
+      box.appendChild(this.notice('alert-info',
+        'FreedomNAS was updated.',
+        'Restart the WebUI to use the new version; the page reloads by itself.',
+        'Restart WebUI', () => restartWebUI()));
+    }
+    if (boot && boot.reboot_needed) {
+      box.appendChild(this.notice('alert-warn',
+        'A new kernel is installed.',
+        `Reboot to start using ${boot.kernel.installed} (running ${boot.kernel.running}).`,
+        'Reboot now', () => rebootSystem()));
+    }
+    clearTimeout(this._timer);
+    this._timer = setTimeout(() => this.refresh(), this.interval);
+  },
+
+  notice(kind, title, text, label, action) {
+    const el = document.createElement('div');
+    el.className = `alert ${kind} mb-4`;
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<div><strong></strong> <span></span>
+      <div class="d-flex gap-2" style="margin-top:8px"><button class="btn btn-secondary btn-sm"></button></div></div>`;
+    el.querySelector('strong').textContent = title;
+    el.querySelector('span').textContent = text;
+    const btn = el.querySelector('button');
+    btn.textContent = label;
+    btn.addEventListener('click', action);
+    return el;
+  },
+};
+
+function busyText(busy) {
+  const parts = [];
+  if (busy.replication) parts.push(`${busy.replication} replication job${busy.replication !== 1 ? 's' : ''}`);
+  return parts.join(', ');
+}
+
+async function restartWebUI() {
+  let state;
+  try { state = await apiJSON('GET', '/api/system/webui'); }
+  catch (e) { toast(`Error: ${e.message}`, 'err'); return; }
+  if (state.busy.updates) {
+    toast('An update is running: restart the WebUI once it has finished.', 'warn', 6000);
+    return;
+  }
+  const running = busyText(state.busy);
+  const msg = running
+    ? `${running} still running will be stopped. Restart the WebUI anyway?`
+    : 'The WebUI restarts and this page reloads when it is back. Jobs started from other pages are interrupted.';
+  if (!await confirm('Restart WebUI', msg, 'Restart')) return;
+
+  try {
+    await apiJSON('POST', '/api/system/webui/restart', { force: !!running });
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'err');
+    return;
+  }
+  waitForWebUI(state.started);
+}
+
+function waitForWebUI(previous) {
+  const el = document.createElement('div');
+  el.className = 'modal-backdrop open';
+  el.innerHTML = `<div class="modal" style="max-width:380px">
+    <div class="modal-body"><p style="font-size:0.875rem"><span class="spinner"></span>
+    <span id="restart-wait-text">Restarting the WebUI…</span></p></div></div>`;
+  document.body.appendChild(el);
+  const deadline = Date.now() + 120000;
+  const poll = async () => {
+    try {
+      const d = await apiJSON('GET', '/api/system/webui');
+      if (d.started !== previous) { location.reload(); return; }
+    } catch { /* down while it restarts */ }
+    if (Date.now() > deadline) {
+      el.querySelector('#restart-wait-text').textContent =
+        'The WebUI has not come back after two minutes. Reload the page in a moment, or check the system console.';
+      return;
+    }
+    setTimeout(poll, 1500);
+  };
+  setTimeout(poll, 1500);
+}
+
+async function rebootSystem() {
+  if (!await confirm('Reboot System', 'The system will reboot. All active sessions will be disconnected.', 'Reboot')) return;
+  try {
+    await apiJSON('POST', '/api/system/reboot');
+    toast('Reboot initiated. This page will be unavailable for a few minutes.', 'warn', 8000);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'err');
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function initShared() {
   if (!Auth.isLoggedIn()) {
@@ -304,6 +425,7 @@ function initShared() {
   loadUserBadge();
   loadEditionBadge();
   updateThemeIcon();
+  Notices.refresh();
 
   document.getElementById('btn-theme')?.addEventListener('click', () => Theme.toggle());
   document.getElementById('btn-sidebar-toggle')?.addEventListener('click', () => Sidebar.toggle());

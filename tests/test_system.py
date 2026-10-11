@@ -266,3 +266,58 @@ def test_the_failed_system_can_be_deleted(client, engine, config):
     assert r.status == 200 and r.body["destroyed"] == "rpool/ROOT/debian-failed-20261009-101500"
     assert [c.argv for c in engine.called("zfs", "dataset_destroy_recursive")] == [
         ["zfs", "destroy", "-r", "rpool/ROOT/debian-failed-20261009-101500"]]
+
+
+def test_a_new_kernel_in_the_active_uki_asks_for_a_reboot(client, engine, config):
+    import os
+    engine.outputs[("bootloader", "boot_state")] = "state: trial\nactive-kernel: 9.9.9-new\n"
+    body = client.get("/api/system/boot").body
+    assert body["reboot_needed"] is True
+    assert body["kernel"] == {"running": os.uname().release, "installed": "9.9.9-new"}
+    engine.outputs[("bootloader", "boot_state")] = f"state: ok\nactive-kernel: {os.uname().release}\n"
+    assert client.get("/api/system/boot").body["reboot_needed"] is False
+
+
+@pytest.fixture
+def restarts(monkeypatch):
+    import api.restart as restart
+    calls = []
+    monkeypatch.setattr(restart, "request_restart", lambda engine: calls.append(engine))
+    return calls
+
+
+def test_the_webui_state_says_when_the_files_changed(client, engine, monkeypatch):
+    import api.restart as restart
+    body = client.get("/api/system/webui").body
+    assert body == {"started": restart.STARTED, "restart_needed": False,
+                    "busy": {"updates": 0, "replication": 0}}
+    monkeypatch.setattr(restart, "fingerprint", lambda roots=None: "changed")
+    assert client.get("/api/system/webui").body["restart_needed"] is True
+
+
+def test_the_webui_restarts_on_request(client, engine, restarts):
+    r = client.post("/api/system/webui/restart", {})
+    assert r.status == 200 and r.body["detail"] == "Restarting"
+    assert len(restarts) == 1
+
+
+def test_no_restart_while_an_update_runs(client, engine, restarts, monkeypatch):
+    import websocket.terminal as terminal
+    monkeypatch.setattr(terminal, "running", 1)
+    r = client.post("/api/system/webui/restart", {"force": True})
+    assert r.status == 409 and "update is running" in r.body["detail"]
+    assert restarts == []
+
+
+def test_running_replication_needs_force(client, engine, restarts, monkeypatch):
+    from freedomnas import replication
+    monkeypatch.setattr(replication, "jobs", lambda: [{"state": "running"}, {"state": "done"}])
+    r = client.post("/api/system/webui/restart", {})
+    assert r.status == 409 and r.body["busy"] == {"updates": 0, "replication": 1}
+    assert client.post("/api/system/webui/restart", {"force": True}).status == 200
+    assert len(restarts) == 1
+
+
+def test_restarting_needs_an_administrator(anonymous, engine, config, restarts):
+    assert anonymous.post("/api/system/webui/restart", {}).status == 401
+    assert restarts == []

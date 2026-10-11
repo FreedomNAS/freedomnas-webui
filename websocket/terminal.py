@@ -19,6 +19,8 @@ Behaviour (spec §7.7):
 - stdin is /dev/null: nobody can answer a prompt here, so a command that
   asks for one has to fail instead of hanging the page forever
 - Output streamed line-by-line as JSON: {"line": "...", "stream": "stdout"|"stderr"}
+- {"restart_needed": bool, "reboot_needed": bool} once it finishes: whether
+  FreedomNAS itself or the kernel changed, for the page's notices
 - {"exit_code": N} sent as the final message when the process finishes
 """
 
@@ -34,12 +36,16 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
+from freedomnas import bootstate
+from api import restart
 from api.deps import get_config, get_engine, is_administrator, verify_credentials
 from api.routes.updates import DEFAULT_STEPS, write_topgrade_config
 
 AUTH_TIMEOUT_SECONDS = 10
 
 router = APIRouter()
+
+running = 0
 
 
 # What a closed socket raises. Starlette reports WebSocketDisconnect when it
@@ -207,13 +213,23 @@ async def updates_terminal(websocket: WebSocket):
             line = raw.decode(errors="replace").rstrip()
             connected = await _send(websocket, stream_name, line)
 
-    await asyncio.gather(
-        stream_pipe(proc.stdout, "stdout"),
-        stream_pipe(proc.stderr, "stderr"),
-    )
-    exit_code = await proc.wait()
-
+    global running
+    running += 1
     try:
+        await asyncio.gather(
+            stream_pipe(proc.stdout, "stdout"),
+            stream_pipe(proc.stderr, "stderr"),
+        )
+        exit_code = await proc.wait()
+    finally:
+        running -= 1
+
+    notices = {
+        "restart_needed": await asyncio.to_thread(restart.restart_needed),
+        "reboot_needed": (await asyncio.to_thread(bootstate.summary, engine, config)).get("reboot_needed", False),
+    }
+    try:
+        await websocket.send_text(json.dumps(notices))
         await websocket.send_text(json.dumps({"exit_code": exit_code}))
     except CLOSED:
         pass

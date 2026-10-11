@@ -59,15 +59,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   loadAutorollback();
 
-  document.getElementById('btn-reboot')?.addEventListener('click', async () => {
-    if (!await confirm('Reboot System', 'The system will reboot. All active sessions will be disconnected.', 'Reboot')) return;
-    try {
-      await apiJSON('POST', '/api/system/reboot');
-      toast('Reboot initiated. This page will be unavailable for a few minutes.', 'warn', 8000);
-    } catch (e) {
-      toast(`Error: ${e.message}`, 'err');
-    }
-  });
+  document.getElementById('btn-reboot')?.addEventListener('click', rebootSystem);
+  document.getElementById('btn-restart-webui')?.addEventListener('click', restartWebUI);
 
   document.getElementById('btn-shutdown')?.addEventListener('click', async () => {
     if (!await confirm('Shut Down System', 'The system will power off. You must physically turn it back on.', 'Shut Down')) return;

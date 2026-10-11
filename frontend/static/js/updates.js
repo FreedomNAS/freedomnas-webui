@@ -104,6 +104,13 @@ function runUpdates() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
 
+    if (msg.restart_needed !== undefined) {
+      if (msg.restart_needed) appendLine(termEl, 'info', '\nFreedomNAS was updated: restart the WebUI from the notice above when your jobs are done.');
+      if (msg.reboot_needed) appendLine(termEl, 'info', 'A new kernel is installed: reboot to start using it.');
+      Notices.refresh();
+      return;
+    }
+
     if (msg.exit_code !== undefined) {
       const ok = msg.exit_code === 0;
       appendLine(termEl, ok ? 'ok' : 'err',
