@@ -70,3 +70,35 @@ def test_what_cannot_be_mounted_is_skipped_and_the_rest_still_is(base, name, man
 
 def test_no_modules_directory_means_no_modules(tmp_path):
     assert discover_community_modules(str(tmp_path / "missing")) == []
+
+
+def page(**nav):
+    return {"api_routes": "api_routes.py", "static_dir": "static",
+            "page_route": "/containers/", "page_template": "containers.html", "nav": nav}
+
+
+def test_a_page_with_a_nav_block_gets_a_sidebar_entry(base):
+    module(base, "containers", {"id": "containers", "webui": page(
+        label="Containers", icon="icons.svg#containers", level="advanced")}, dirs=("static",))
+    [found] = discover_community_modules(str(base))
+    assert found.nav == ("/containers/", "Containers", "/static/modules/containers/icons.svg#containers",
+                         "advanced-only")
+
+
+def test_the_entry_defaults_to_every_level_and_the_generic_icon(base):
+    module(base, "containers", {"id": "containers", "webui": page()})
+    [found] = discover_community_modules(str(base))
+    assert found.nav == ("/containers/", "containers", "#icon-module", "")
+
+
+def test_an_unknown_level_is_shown_from_advanced(base):
+    module(base, "containers", {"id": "containers", "webui": page(level="wizard")})
+    [found] = discover_community_modules(str(base))
+    assert found.nav.level_class == "advanced-only"
+
+
+def test_no_page_means_no_sidebar_entry(base):
+    module(base, "containers", {"id": "containers", "webui": {
+        "api_routes": "api_routes.py", "nav": {"label": "Containers"}}})
+    [found] = discover_community_modules(str(base))
+    assert found.nav is None

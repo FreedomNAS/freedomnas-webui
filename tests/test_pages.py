@@ -107,3 +107,13 @@ def test_the_setup_wizard_shows_only_the_current_steps_footer():
     wizard = Path("frontend/static/js/setup.js").read_text()
     show_step = wizard.split("function showStep(", 1)[1].split("\n  }", 1)[0]
     assert ".wizard-footer" in show_step
+
+
+def test_community_pages_appear_in_the_sidebar(anonymous, config, monkeypatch):
+    from api.main import templates
+    from api.module_discovery import NavEntry
+    monkeypatch.setitem(templates.env.globals, "community_nav", [
+        NavEntry("/containers/", "Containers", "#icon-module", "advanced-only")])
+    body = anonymous.get("/dashboard/").body
+    assert re.search(r'href="/containers/" class="nav-item advanced-only"', body)
+    assert "Containers" in body

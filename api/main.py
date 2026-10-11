@@ -55,6 +55,7 @@ templates = Jinja2Templates(
         *(str(m.templates_dir) for m in _community_modules if m.templates_dir),
     ]
 )
+templates.env.globals["community_nav"] = [m.nav for m in _community_modules if m.nav]
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +123,6 @@ async def backup_placeholder(path: str = ""):
 # Static files
 # ---------------------------------------------------------------------------
 
-app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
-
 for _mod in _community_modules:
     if _mod.static_dir:
         app.mount(
@@ -131,6 +130,8 @@ for _mod in _community_modules:
             StaticFiles(directory=str(_mod.static_dir)),
             name=f"static_{_mod.id}",
         )
+
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 
 # ---------------------------------------------------------------------------

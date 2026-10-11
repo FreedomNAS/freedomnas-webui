@@ -192,8 +192,8 @@ def test_ssh_wants_a_boolean(client, engine, value):
 def core_modules(monkeypatch):
     from conftest import CORE
     from freedomnas.module_loader import ModuleLoader
-    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dir",
-                        staticmethod(lambda: str(CORE / "modules")))
+    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dirs",
+                        staticmethod(lambda: [CORE / "modules"]))
 
 
 def test_health_asks_every_module(client, engine, config, core_modules):

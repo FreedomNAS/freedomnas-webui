@@ -24,6 +24,13 @@ from typing import List, NamedTuple, Optional
 logger = logging.getLogger("FreedomNAS.WebUI.ModuleDiscovery")
 
 
+class NavEntry(NamedTuple):
+    href: str
+    label: str
+    icon: str
+    level_class: str
+
+
 class CommunityModule(NamedTuple):
     id: str
     router: object
@@ -32,6 +39,36 @@ class CommunityModule(NamedTuple):
     static_dir: Optional[Path]
     page_route: Optional[str]
     page_template: Optional[str]
+    nav: Optional[NavEntry] = None
+
+
+_LEVEL_CLASSES = {"assisted": "", "advanced": "advanced-only", "expert": "expert-only"}
+
+
+def _nav_entry(module_id: str, webui: dict, static_dir: Optional[Path]) -> Optional[NavEntry]:
+    """
+    The sidebar entry a module asks for with webui.nav: {label, icon, level}.
+    `icon` is "<file>#<symbol>" inside the module's static_dir; without one
+    the generic module icon is used. `level` is the lowest UI level that
+    shows the entry. Only a module with a page of its own gets one.
+    """
+    nav = webui.get("nav")
+    page_route = webui.get("page_route")
+    if nav is None or not page_route or not webui.get("page_template"):
+        return None
+    level = nav.get("level", "assisted")
+    if level not in _LEVEL_CLASSES:
+        logger.warning("Module '%s': unknown nav level '%s' — shown from Advanced", module_id, level)
+        level = "advanced"
+    icon = "#icon-module"
+    if nav.get("icon") and static_dir:
+        icon = f"/static/modules/{module_id}/{nav['icon']}"
+    return NavEntry(
+        href=page_route,
+        label=nav.get("label") or module_id,
+        icon=icon,
+        level_class=_LEVEL_CLASSES[level],
+    )
 
 
 def _default_modules_dir() -> Path:
@@ -106,15 +143,18 @@ def discover_community_modules(modules_dir: Optional[str] = None) -> List[Commun
 
         templates_dir = entry / webui["templates_dir"] if webui.get("templates_dir") else None
         static_dir = entry / webui["static_dir"] if webui.get("static_dir") else None
+        if static_dir and not static_dir.exists():
+            static_dir = None
 
         found.append(CommunityModule(
             id=module_id,
             router=router,
             route_prefix=webui.get("route_prefix", f"/api/{module_id}"),
             templates_dir=templates_dir if templates_dir and templates_dir.exists() else None,
-            static_dir=static_dir if static_dir and static_dir.exists() else None,
+            static_dir=static_dir,
             page_route=webui.get("page_route"),
             page_template=webui.get("page_template"),
+            nav=_nav_entry(module_id, webui, static_dir),
         ))
         logger.info("Discovered community module '%s' for WebUI mounting", module_id)
 
