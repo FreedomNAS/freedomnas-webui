@@ -15,7 +15,8 @@ POST /boot/forget       — clear the record of a rollback, optionally
                           destroying the failed root dataset it kept
 GET  /webui    — whether the WebUI must restart to use updated files, and
                  the work a restart would cut off
-POST /webui/restart — restart the WebUI; refused while an update runs, and
+POST /webui/restart — restart the WebUI; refused while an update or a module
+                 install/removal runs, and
                  while other jobs run unless {"force": true}
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
@@ -39,6 +40,7 @@ from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
 from freedomnas import bootstate, replication, shadow
 from api import restart
 from api.deps import authenticate, get_config, get_engine
+from api.routes import plugins
 from websocket import terminal
 
 router = APIRouter()
@@ -235,6 +237,7 @@ async def forget_rollback(body: dict, username: str = Depends(authenticate)):
 def _busy() -> dict:
     return {
         "updates": terminal.running,
+        "plugins": 1 if plugins.running() else 0,
         "replication": sum(1 for job in replication.jobs() if job.get("state") == "running"),
     }
 
@@ -258,6 +261,9 @@ async def webui_restart(body: dict = None, username: str = Depends(authenticate)
     if busy["updates"]:
         return JSONResponse(status_code=409, content={
             "detail": "An update is running: restart the WebUI once it has finished", "busy": busy})
+    if busy["plugins"]:
+        return JSONResponse(status_code=409, content={
+            "detail": "A module is being installed or removed: restart the WebUI once it has finished", "busy": busy})
     if busy["replication"] and not force:
         return JSONResponse(status_code=409, content={
             "detail": "Replication jobs are running: a restart stops them", "busy": busy})

@@ -360,6 +360,10 @@ async function restartWebUI() {
     toast('An update is running: restart the WebUI once it has finished.', 'warn', 6000);
     return;
   }
+  if (state.busy.plugins) {
+    toast('A module is being installed or removed: restart the WebUI once it has finished.', 'warn', 6000);
+    return;
+  }
   const running = busyText(state.busy);
   const msg = running
     ? `${running} still running will be stopped. Restart the WebUI anyway?`

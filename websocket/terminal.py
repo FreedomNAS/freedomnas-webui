@@ -39,6 +39,7 @@ from freedomnas.config import ConfigurationException
 from freedomnas import bootstate
 from api import restart
 from api.deps import get_config, get_engine, is_administrator, verify_credentials
+from api.routes import plugins
 from api.routes.updates import DEFAULT_STEPS, write_topgrade_config
 
 AUTH_TIMEOUT_SECONDS = 10
@@ -133,6 +134,11 @@ async def updates_terminal(websocket: WebSocket):
 
     username = await _authenticate_socket(websocket)
     if username is None:
+        return
+
+    if plugins.running():
+        await _send(websocket, "stderr", "A module is being installed or removed: start the update once it has finished")
+        await _close(websocket, 1013)
         return
 
     engine = get_engine()

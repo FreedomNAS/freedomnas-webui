@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Plugins{% endblock %}
+{% block page_title %}Plugins{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Plugins</h1>
+    <p>Add features to FreedomNAS with the modules published in this edition's package repository</p>
+  </div>
+  <div class="page-header-actions">
+    <button id="btn-plugins-refresh" class="btn btn-secondary" title="Download the repository's package list again, to see modules published since the last update">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+      Check for new modules
+    </button>
+  </div>
+</div>
+
+<div id="plugins-unsupported" class="alert alert-info mb-4" hidden>
+  <div>This edition's profile does not list modules from its repository yet.</div>
+</div>
+
+<div class="grid-2" id="plugins-list">
+  <div class="card"><p class="text-muted">Loading…</p></div>
+</div>
+
+<div class="section" id="plugins-job" hidden>
+  <div class="section-header"><span class="section-title" id="plugins-job-title">Package manager</span></div>
+  <div class="terminal-wrap">
+    <div class="terminal-header">
+      <div class="terminal-dot terminal-dot-r"></div>
+      <div class="terminal-dot terminal-dot-y"></div>
+      <div class="terminal-dot terminal-dot-g"></div>
+      <span class="terminal-title" id="plugins-job-state"></span>
+    </div>
+    <div class="terminal-body" id="plugins-job-output" aria-live="polite" aria-label="Package manager output"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-plugin-remove" role="dialog" aria-modal="true" aria-labelledby="plugin-remove-title">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <span class="modal-title" id="plugin-remove-title">Remove module</span>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:0.875rem">
+        The package <span class="font-mono" id="plugin-remove-package"></span> is removed. Its settings
+        and the datasets it made stay on the system: installing the module again finds them.
+        Its page disappears once the WebUI is restarted.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-close>Cancel</button>
+      <button class="btn btn-danger" id="btn-plugin-remove-ok">Remove</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/plugins.js"></script>
+{% endblock %}

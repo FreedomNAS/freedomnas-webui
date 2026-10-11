@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 PAGES = ["/auth/", "/setup/", "/dashboard/", "/storage/", "/shares/", "/network/",
-         "/users/", "/updates/", "/services/", "/system/"]
+         "/users/", "/updates/", "/services/", "/plugins/", "/system/"]
 
 
 @pytest.mark.parametrize("path", PAGES)

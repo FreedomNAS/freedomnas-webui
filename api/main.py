@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from api.deps import get_config, get_engine
 from freedomnas.engine import CommandTranslationError
 from api.module_discovery import discover_community_modules
-from api.routes import disks, network, services, setup, shares, storage, system, updates, users
+from api.routes import disks, network, plugins, services, setup, shares, storage, system, updates, users
 from websocket import terminal
 
 EXEMPT_PREFIXES = ("/api/setup",)
@@ -98,6 +98,7 @@ app.include_router(shares.router,  prefix="/api/shares",  tags=["shares"])
 app.include_router(updates.router, prefix="/api/updates", tags=["updates"])
 app.include_router(services.router, prefix="/api/services", tags=["services"])
 app.include_router(disks.router,    prefix="/api/storage/disks", tags=["disks"])
+app.include_router(plugins.router,  prefix="/api/plugins", tags=["plugins"])
 app.include_router(setup.router,   prefix="/api/setup",   tags=["setup"])
 app.include_router(terminal.router)
 
@@ -263,6 +264,11 @@ async def page_updates(request: Request):
 @app.get("/services/")
 async def page_services(request: Request):
     return templates.TemplateResponse(request, "services.html")
+
+
+@app.get("/plugins/")
+async def page_plugins(request: Request):
+    return templates.TemplateResponse(request, "plugins.html")
 
 
 @app.get("/system/")

@@ -194,3 +194,12 @@ def test_the_end_of_an_update_tells_the_page_about_restart_and_reboot(server, en
     messages, _ = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
     assert messages[-2:] == [{"restart_needed": True, "reboot_needed": True}, {"exit_code": 3}]
     assert terminal.running == 0
+
+
+def test_no_update_while_a_module_is_installed(server, engine, config, launched, monkeypatch):
+    from api.routes import plugins
+    monkeypatch.setitem(plugins._job, "state", "running")
+    messages, code = session(server, auth_frame("admin", ACCOUNTS["admin"][0]))
+    assert code == 1013
+    assert "module is being installed" in messages[-1]["line"]
+    assert launched == []

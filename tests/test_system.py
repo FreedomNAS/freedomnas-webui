@@ -290,7 +290,7 @@ def test_the_webui_state_says_when_the_files_changed(client, engine, monkeypatch
     import api.restart as restart
     body = client.get("/api/system/webui").body
     assert body == {"started": restart.STARTED, "restart_needed": False,
-                    "busy": {"updates": 0, "replication": 0}}
+                    "busy": {"updates": 0, "plugins": 0, "replication": 0}}
     monkeypatch.setattr(restart, "fingerprint", lambda roots=None: "changed")
     assert client.get("/api/system/webui").body["restart_needed"] is True
 
@@ -313,11 +313,19 @@ def test_running_replication_needs_force(client, engine, restarts, monkeypatch):
     from freedomnas import replication
     monkeypatch.setattr(replication, "jobs", lambda: [{"state": "running"}, {"state": "done"}])
     r = client.post("/api/system/webui/restart", {})
-    assert r.status == 409 and r.body["busy"] == {"updates": 0, "replication": 1}
+    assert r.status == 409 and r.body["busy"] == {"updates": 0, "plugins": 0, "replication": 1}
     assert client.post("/api/system/webui/restart", {"force": True}).status == 200
     assert len(restarts) == 1
 
 
 def test_restarting_needs_an_administrator(anonymous, engine, config, restarts):
     assert anonymous.post("/api/system/webui/restart", {}).status == 401
+    assert restarts == []
+
+
+def test_no_restart_while_a_module_is_installed(client, engine, restarts, monkeypatch):
+    from api.routes import plugins
+    monkeypatch.setitem(plugins._job, "state", "running")
+    r = client.post("/api/system/webui/restart", {"force": True})
+    assert r.status == 409 and r.body["busy"]["plugins"] == 1
     assert restarts == []
