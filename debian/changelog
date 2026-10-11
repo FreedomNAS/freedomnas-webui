@@ -1,3 +1,13 @@
+freedomnas-webui (0.9.12-1) unstable; urgency=medium
+
+  * UKI backed up right after the pre-update snapshot
+  * Automatic rollbacks reported on the dashboard, with their setting on
+    the System page
+  * The installer's administrator password kept by the setup wizard, and
+    administrators given the groups their features need
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Sun, 11 Oct 2026 00:18:58 +0000
+
 freedomnas-webui (0.9.11-1) unstable; urgency=medium
 
   * Network page: DHCP or static IPv4, DNS, IPv6, MTU and routes, with
