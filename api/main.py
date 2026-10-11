@@ -78,6 +78,14 @@ async def first_run_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def revalidate_static(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------

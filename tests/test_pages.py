@@ -36,6 +36,11 @@ def test_static_files_are_served(anonymous, config, path):
     assert anonymous.get(path).status == 200
 
 
+@pytest.mark.parametrize("path", ["/static/css/main.css", "/static/js/main.js"])
+def test_static_files_are_revalidated_after_an_update(anonymous, config, path):
+    assert anonymous.get(path).headers["cache-control"] == "no-cache"
+
+
 @pytest.mark.parametrize("method, path", [
     ("GET", "/api/packages/"),
     ("POST", "/api/packages/install"),
