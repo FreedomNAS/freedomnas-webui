@@ -811,6 +811,25 @@ def _user_exists(engine, who) -> bool:
     return bool(stdout.strip())
 
 
+def _uid_from_data(engine, user: str, smb: list, nfs: list):
+    """
+    The uid a user without one in the pool's configuration had, read from
+    the data: the owner of a share's directory that belongs to that user
+    alone. None when no share tells it, or when the number is taken here.
+    """
+    paths = [s["path"] for s in smb if s.get("path") and s.get("users") == [user]]
+    paths += [s["path"] for s in nfs if s.get("path") and s.get("owner") == user]
+    for path in paths:
+        try:
+            stdout, _ = engine.execute("directories", "owner_uid_get", path=path, check=False)
+        except (CommandExecutionError, CommandTranslationError):
+            continue
+        uid = stdout.strip()
+        if uid.isdigit() and int(uid) >= 1000 and not _user_exists(engine, uid):
+            return int(uid)
+    return None
+
+
 def _group_exists(engine, group: str) -> bool:
     try:
         stdout, _ = engine.execute("users", "group_exists", group=group, check=False)
@@ -931,6 +950,11 @@ def _do_import(engine, config, request: dict, body: dict, admin_user: str) -> di
         if given[user_name].get("admin"):
             groups.append(sudo_group)
         uid = info["uid"] if info["uid"] and not info["uid_taken"] else None
+        if not info["uid"]:
+            uid = _uid_from_data(engine, user_name, smb, nfs)
+            if uid is None:
+                warnings.append(f"{user_name}: the pool records no uid and none of its shares tells it, "
+                                "so the user gets a new one")
         if info["uid"] and info["uid_taken"]:
             warnings.append(f"{user_name}: uid {info['uid']} is taken here, so its files on the pool "
                             "keep an owner number this system gives to someone else")

@@ -220,6 +220,32 @@ def test_a_taken_uid_is_not_reused(client, pools, config, monkeypatch):
     assert any("uid 1005 is taken" in w for w in r.body["warnings"])
 
 
+def test_a_user_without_a_uid_takes_the_one_its_share_is_owned_by(client, pools, config, monkeypatch):
+    no_uid = {**FOREIGN_CONFIG, "users": [{"username": "carla", "groups": [], "shell": "/bin/bash"}]}
+    freedomnas_pool(pools, monkeypatch, config_data=no_uid)
+    pools.outputs[("directories", "owner_uid_get")] = lambda path, **_: "1003\n" if path == "/tank/media" else ""
+    r = client.post("/api/storage/pools/import", {
+        "pool_id": "42", "smb": ["media"],
+        "users": [{"username": "carla", "password": "a long password"}],
+    })
+    assert r.status == 200, r.body
+    [create] = pools.called("users", "create_with_uid")
+    assert create.argv[create.argv.index("-u") + 1] == "1003"
+
+
+def test_a_user_no_share_tells_the_uid_of_gets_a_new_one_with_a_warning(client, pools, config, monkeypatch):
+    no_uid = {**FOREIGN_CONFIG, "users": [{"username": "carla", "groups": [], "shell": "/bin/bash"}]}
+    freedomnas_pool(pools, monkeypatch, config_data=no_uid)
+    pools.outputs[("directories", "owner_uid_get")] = "0\n"
+    r = client.post("/api/storage/pools/import", {
+        "pool_id": "42", "smb": ["media"],
+        "users": [{"username": "carla", "password": "a long password"}],
+    })
+    assert r.status == 200
+    assert pools.called("users", "create_with_uid") == [] and pools.called("users", "create")
+    assert any("records no uid" in w for w in r.body["warnings"])
+
+
 def test_a_share_with_a_name_already_used_is_left_alone(client, pools, config, monkeypatch):
     freedomnas_pool(pools, monkeypatch)
     config.add_smb_share({"name": "media", "path": "/srv/mine", "acl": "Everyone:R"})
