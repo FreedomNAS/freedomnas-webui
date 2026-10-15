@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!btn) return;
     if (btn.dataset.action === 'password') changePassword(btn.dataset.user);
     if (btn.dataset.action === 'remove') deleteUser(btn.dataset.user);
+    if (btn.dataset.action === 'admin') setAdmin(btn.dataset.user, btn.dataset.admin === 'true');
   });
 
   document.getElementById('form-passwd').addEventListener('submit', async (e) => {
@@ -111,11 +112,14 @@ function renderUser(u) {
   const isSelf = u.username === Auth.getUser();
   return `
     <tr>
-      <td class="font-bold">${esc(u.username)} ${isSelf ? '<span class="badge badge-info" style="margin-left:4px">you</span>' : ''}</td>
+      <td class="font-bold">${esc(u.username)} ${isSelf ? '<span class="badge badge-info" style="margin-left:4px">you</span>' : ''}${u.admin ? '<span class="badge badge-ok" style="margin-left:4px">admin</span>' : ''}</td>
       <td>${groups || '<span class="text-muted">—</span>'}</td>
       <td class="mono muted">${esc(u.shell || '/bin/bash')}</td>
       <td class="col-actions">
         <button class="btn btn-secondary btn-sm" data-action="password" data-user="${esc(u.username)}">Password</button>
+        ${u.admin
+          ? (!isSelf ? `<button class="btn btn-secondary btn-sm advanced-only" data-action="admin" data-admin="false" data-user="${esc(u.username)}">Remove administrator</button>` : '')
+          : `<button class="btn btn-secondary btn-sm advanced-only" data-action="admin" data-admin="true" data-user="${esc(u.username)}">Make administrator</button>`}
         ${!isSelf ? `<button class="btn btn-danger btn-sm advanced-only" data-action="remove" data-user="${esc(u.username)}">Remove</button>` : ''}
       </td>
     </tr>`;
@@ -125,6 +129,21 @@ function changePassword(username) {
   document.getElementById('form-passwd').reset();
   document.getElementById('p-username').value = username;
   openModal('modal-passwd');
+}
+
+async function setAdmin(username, admin) {
+  const title = admin ? 'Make Administrator' : 'Remove Administrator';
+  const text = admin
+    ? `Make <strong>${esc(username)}</strong> an administrator? They will be able to manage this system and use sudo.`
+    : `Take the administrator role from <strong>${esc(username)}</strong>? They keep their account, files and shares.`;
+  if (!await confirm(title, text, admin ? 'Make administrator' : 'Remove role')) return;
+  try {
+    await apiJSON('POST', `/api/users/${encodeURIComponent(username)}/admin`, { admin });
+    toast(admin ? `"${username}" is now an administrator.` : `"${username}" is no longer an administrator.`, 'ok');
+    await loadUsers();
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'err');
+  }
 }
 
 async function deleteUser(username) {

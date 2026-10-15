@@ -4,6 +4,7 @@
 GET    /                    — list users from config
 POST   /                    — create OS user + persist to config
 POST   /{username}/password — set an existing user's password
+POST   /{username}/admin    — give or take the administrator role
 DELETE /{username}          — delete OS user + remove from config
 
 Passwords always reach the OS through execute_with_stdin (spec 13.2): the
@@ -209,6 +210,48 @@ async def set_user_password(target: str, body: dict, username: str = Depends(aut
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": f"Password updated for {target}"}
+
+
+@router.post("/{target}/admin")
+async def set_user_admin(target: str, body: dict, username: str = Depends(authenticate)):
+    """
+    The administrator role of an existing account: the edition's
+    administrator group and the groups administrators get with it (docker…)
+    are added or taken, and the configuration records `admin`. Nobody takes
+    their own role, and the last administrator keeps it.
+    """
+    want = body.get("admin")
+    if not isinstance(want, bool):
+        return JSONResponse(status_code=422, content={"detail": "admin must be true or false"})
+    engine, config = get_engine(), get_config()
+    user = config.get_user(target)
+    if user is None:
+        return JSONResponse(status_code=404, content={"detail": f"There is no user named {target}"})
+    if bool(user.get("admin")) == want:
+        return {"username": target, "admin": want}
+    if not want:
+        if target == username:
+            return JSONResponse(status_code=422, content={
+                "detail": "You cannot take your own administrator role: another administrator has to"})
+        others = [u for u in config.get_users() if u.get("admin") and u.get("username") != target]
+        if not others:
+            return JSONResponse(status_code=422, content={
+                "detail": f"{target} is the last administrator: make someone else one first"})
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    groups = [sudo_group] + [g for g in admin_groups_present(engine) if g != sudo_group]
+    try:
+        stdout, _ = engine.execute("users", "list_groups", username=target, check=False)
+        have = set(stdout.split())
+        for group in groups:
+            if want and group not in have:
+                engine.execute("users", "add_to_group", group=group, username=target)
+            elif not want and group in have:
+                engine.execute("users", "remove_from_group", group=group, username=target)
+        config.add_user({**user, "admin": want,
+                         "groups": [g for g in user.get("groups") or [] if g not in groups]})
+    except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"username": target, "admin": want}
 
 
 @router.delete("/{target}")

@@ -189,3 +189,43 @@ def test_an_ordinary_user_joins_no_admin_group(client, engine, config):
     ).status == 200
     [create] = engine.called("users", "create")
     assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "users", "mario"]
+
+
+def test_an_existing_user_is_made_an_administrator(client, engine, config):
+    config.add_user({"username": "carla", "groups": []})
+    r = client.post("/api/users/carla/admin", {"admin": True})
+    assert r.status == 200, r.body
+    [add] = engine.called("users", "add_to_group")
+    assert add.argv == ["usermod", "-a", "-G", "sudo", "carla"]
+    assert config.get_user("carla")["admin"] is True
+
+
+def test_an_administrator_loses_the_role_and_its_group(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    engine.outputs[("users", "list_groups")] = "carla sudo"
+    r = client.post("/api/users/carla/admin", {"admin": False})
+    assert r.status == 200, r.body
+    [remove] = engine.called("users", "remove_from_group")
+    assert remove.argv == ["deluser", "carla", "sudo"]
+    assert config.get_user("carla")["admin"] is False
+
+
+def test_nobody_takes_their_own_role(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    r = client.post("/api/users/admin/admin", {"admin": False})
+    assert r.status == 422 and "your own" in r.body["detail"]
+    assert engine.called("users", "remove_from_group") == []
+
+
+def test_the_last_administrator_keeps_the_role(client, engine, config):
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    r = client.post("/api/users/carla/admin", {"admin": False})
+    assert r.status == 422 and "last administrator" in r.body["detail"]
+    assert config.get_user("carla")["admin"] is True
+
+
+def test_the_role_of_an_unknown_user_is_not_found(client, engine, config):
+    r = client.post("/api/users/nobody/admin", {"admin": True})
+    assert r.status == 404
