@@ -264,6 +264,7 @@ def test_finishing_a_restore_takes_over_the_restored_administrator(
     assert delete.argv[-1] == "admin"
     assert engine.called("services", "enable") == []
     assert engine.called("system", "hostname_set") == []
+    assert engine.called("samba", "usershare_prepare") != []
     assert restored.activated == []
     users = {u["username"]: u for u in fresh_config.get_users()}
     assert sorted(users) == ["mario", "sarah"]

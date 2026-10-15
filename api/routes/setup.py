@@ -296,6 +296,7 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         _set_ssh(engine, config, body.get("ssh", False))
         # The configuration may come from another edition's install.
         config.set("system.edition", engine.os_type)
+        usershares.prepare(engine)
         admin_name = _set_up_admin(engine, config, admin, username)
         config.clear_setup_pending()
         shadow.sync(engine, str(config.config_path))
