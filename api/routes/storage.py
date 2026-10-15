@@ -839,8 +839,7 @@ def _annotate(engine, config, report: dict) -> dict:
     for user in report["users"]:
         user["exists_here"] = _user_exists(engine, user["username"])
         user["uid_taken"] = bool(user["uid"]) and not user["exists_here"] and _user_exists(engine, user["uid"])
-        user["groups_here"] = [g for g in user["groups"]
-                               if g not in pool_import.ADMIN_GROUPS and _group_exists(engine, g)]
+        user["groups_here"] = [g for g in user["groups"] if _group_exists(engine, g)]
     return report
 
 

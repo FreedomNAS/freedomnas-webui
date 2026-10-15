@@ -20,8 +20,11 @@ def admin(server, engine, fresh_config, monkeypatch):
         return f"{pool}/.freedomnas"
 
     monkeypatch.setattr(setup_routes.shadow, "activate", activate)
+    mirrored = []
+    monkeypatch.setattr(setup_routes.shadow, "sync", lambda engine_, path: mirrored.append(path) or [])
     client = Client(server, ("admin", LOGIN_PASSWORD))
     client.activated = activated
+    client.mirrored = mirrored
     return client
 
 
@@ -72,6 +75,7 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
     assert password.stdin == f"admin:{NEW_PASSWORD}\n"
     assert "usershare max shares = 100" in files[("samba", "config_file")].read_text()
     assert fresh_config.is_initialized()
+    assert admin.mirrored == [str(fresh_config.config_path)]
     assert fresh_config.get_hostname() == "nas"
     assert fresh_config.get("system.ssh_enabled") is False
     assert [u["username"] for u in fresh_config.get_users()] == ["admin"]
@@ -331,4 +335,5 @@ def test_the_administrator_joins_the_admin_groups_this_system_has(admin, engine,
     assert admin.post("/api/setup/initialize", body()).status == 200
     [joined] = engine.called("users", "add_to_group")
     assert joined.kwargs == {"username": "admin", "group": "docker"}
-    assert next(u for u in fresh_config.get_users() if u["username"] == "admin")["groups"] == ["sudo", "docker"]
+    entry = next(u for u in fresh_config.get_users() if u["username"] == "admin")
+    assert (entry["groups"], entry["admin"]) == (["docker"], True)

@@ -109,7 +109,7 @@ def test_a_system_mountpoint_asks_for_another_one(client, pools):
     assert r.status == 422 and "Choose another mountpoint" in r.body["detail"]
     r = client.post("/api/storage/pools/import", {"pool_id": "42", "mountpoint": "/mnt/tank"})
     assert r.status == 200
-    [setting] = pools.called("zfs", "dataset_set")
+    [setting] = [c for c in pools.called("zfs", "dataset_set") if c.argv[-1] == "tank"]
     assert setting.argv == ["zfs", "set", "mountpoint=/mnt/tank", "tank"]
 
 

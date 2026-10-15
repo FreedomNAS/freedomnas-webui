@@ -11,7 +11,8 @@ GET  /restored    — what a configuration restored from a pool brought along
 GET  /devices     — block devices, for the data pool
 GET  /pools       — imported pools, for where the configuration lives
 POST /initialize  — administrator, hostname, timezone, optional data pool,
-                     the pool that holds .freedomnas; marks initialized.
+                     the pool that keeps a copy of the configuration (its
+                     own lives on the root pool); marks initialized.
                      On a restored system: administrator and SSH only
 
 A disk image leaves a setup-pending file on its system disk. When the first
@@ -30,7 +31,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
-from freedomnas.config import ConfigurationException
+from freedomnas.config import ConfigurationException, normalize_user
 from freedomnas import shadow, usershares
 from freedomnas.package_manager import admin_groups_present
 from api.deps import _basic_credentials, authenticate, get_config, get_engine
@@ -100,7 +101,7 @@ def _as_admin(config, name: str, sudo_group: str) -> dict:
 
 
 def _is_admin(user: dict, sudo_group: str) -> bool:
-    return bool(user.get("admin")) or sudo_group in (user.get("groups") or [])
+    return bool(normalize_user(user).get("admin")) or sudo_group in (user.get("groups") or [])
 
 
 def _set_up_admin(engine, config, admin: dict, login: str) -> str:
@@ -248,8 +249,6 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
             return created
 
     try:
-        # The state moves to its pool first: if that fails, nothing has been
-        # marked initialized yet and the wizard can simply be run again.
         dataset = shadow.activate(engine, state_pool, state=Path(config.config_path).parent)
         engine.execute("system", "hostname_set", hostname=hostname)
         config.set_hostname(hostname)
@@ -260,6 +259,7 @@ async def initialize(body: dict, request: Request, username: str = Depends(authe
         config.set("system.ssh_enabled", False)
         config.mark_initialized(edition=edition, initialized_by="webui")
         config.clear_setup_pending()
+        shadow.sync(engine, str(config.config_path))
     except (
         CommandExecutionError,
         CommandTranslationError,
@@ -298,6 +298,7 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         config.set("system.edition", engine.os_type)
         admin_name = _set_up_admin(engine, config, admin, username)
         config.clear_setup_pending()
+        shadow.sync(engine, str(config.config_path))
     except (
         CommandExecutionError,
         CommandTranslationError,

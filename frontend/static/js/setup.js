@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-back-4').addEventListener('click', () => showStep(3));
   document.getElementById('btn-next-4').addEventListener('click', () => {
-    if (!selectedStatePool()) { toast('Choose where the configuration is kept.'); return; }
+    if (!selectedStatePool()) { toast('Choose where the copy of the configuration is kept.'); return; }
     buildSummary();
     showStep(5);
   });
@@ -278,7 +278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       ['Hostname', b.hostname],
       ['Timezone', b.timezone],
       ['Data pool', b.pool ? `${b.pool.name} — ${b.pool.vdev_type || 'single/stripe'} on ${b.pool.devices.join(', ')}${b.pool.encrypted ? ', encrypted' : ''}` : 'none'],
-      ['Configuration on', b.state_pool],
+      ['Configuration copy on', b.state_pool],
     ];
     document.getElementById('summary').replaceChildren(...rows.map(([k, v]) => {
       const tr = document.createElement('tr');
