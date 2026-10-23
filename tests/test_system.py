@@ -329,3 +329,37 @@ def test_no_restart_while_a_module_is_installed(client, engine, restarts, monkey
     r = client.post("/api/system/webui/restart", {"force": True})
     assert r.status == 409 and r.body["busy"]["plugins"] == 1
     assert restarts == []
+
+
+@pytest.fixture
+def certificate(tmp_path, monkeypatch):
+    from freedomnas import paths, tls
+    monkeypatch.setattr(paths, "tls_dir", lambda engine=None: tmp_path / "tls")
+    tls.ensure_certificate("nas", ["192.168.1.200"])
+    return tls
+
+
+def test_certificate_shows_fingerprints_names_and_addresses(client, certificate):
+    r = client.get("/api/system/certificate")
+    assert r.status == 200
+    assert r.body["ca_fingerprint"] == certificate.ca_fingerprint()
+    assert r.body["fingerprint"] == certificate.fingerprint()
+    assert "nas" in r.body["names"] and "192.168.1.200" in r.body["addresses"]
+
+
+def test_certificate_needs_credentials(anonymous, config, certificate):
+    assert anonymous.get("/api/system/certificate").status == 401
+
+
+def test_the_ca_downloads_without_credentials(anonymous, certificate):
+    r = anonymous.get("/freedomnas-ca.crt")
+    assert r.status == 200
+    assert r.headers["content-type"] == "application/x-x509-ca-cert"
+    assert r.body == certificate.ca_file().read_text()
+    assert "PRIVATE" not in r.body
+
+
+def test_no_ca_yet_is_a_404(anonymous, tmp_path, monkeypatch):
+    from freedomnas import paths
+    monkeypatch.setattr(paths, "tls_dir", lambda engine=None: tmp_path / "none")
+    assert anonymous.get("/freedomnas-ca.crt").status == 404

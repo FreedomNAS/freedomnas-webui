@@ -15,11 +15,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from api.deps import get_config, get_engine
+from freedomnas import tls
 from freedomnas.engine import CommandTranslationError
 from api.module_discovery import discover_community_modules
 from api.routes import disks, network, plugins, services, setup, shares, storage, system, updates, users
@@ -159,6 +160,14 @@ def _docs_dir():
 
 
 _DOCS_DIR = _docs_dir()
+
+
+@app.get("/freedomnas-ca.crt")
+async def ca_certificate():
+    if not tls.ca_file().is_file():
+        return JSONResponse(status_code=404, content={"detail": "No certificate authority yet"})
+    return FileResponse(tls.ca_file(), media_type="application/x-x509-ca-cert",
+                        filename="freedomnas-ca.crt")
 
 
 @app.get("/docs")

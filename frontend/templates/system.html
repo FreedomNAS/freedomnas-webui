@@ -64,6 +64,29 @@
   </div>
 </div>
 
+<!-- Certificate -->
+<div class="section" id="certificate-section" hidden>
+  <div class="section-header"><span class="section-title">Certificate</span></div>
+  <div class="card" style="max-width:480px">
+    <p class="text-sm" style="margin-bottom:10px">
+      FreedomNAS signs its own certificates. Install its certificate authority once on each
+      computer or phone, as a trusted authority, and the browser warning goes away for the
+      WebUI and for apps that use HTTPS, such as Vaultwarden.
+    </p>
+    <table style="width:100%;border-collapse:collapse">
+      <tr><td class="text-muted" style="padding:5px 0;width:110px">Authority</td><td id="cert-ca" class="text-sm" style="word-break:break-all">—</td></tr>
+      <tr class="advanced-only"><td class="text-muted" style="padding:5px 0">Certificate</td><td id="cert-fp" class="text-sm" style="word-break:break-all">—</td></tr>
+      <tr class="advanced-only"><td class="text-muted" style="padding:5px 0">Valid for</td><td id="cert-names" class="text-sm" style="word-break:break-all">—</td></tr>
+      <tr class="advanced-only"><td class="text-muted" style="padding:5px 0">Expires</td><td id="cert-expires" class="text-sm">—</td></tr>
+    </table>
+    <span class="form-hint" style="display:block;margin:8px 0 12px">
+      Compare the authority's fingerprint with the one your device shows before trusting it.
+      A new address or hostname gets a new certificate at the next boot, signed by the same authority.
+    </span>
+    <a class="btn btn-secondary" href="/freedomnas-ca.crt" download>Download the certificate authority</a>
+  </div>
+</div>
+
 <!-- SSH (Advanced+) -->
 <div class="section advanced-only">
   <div class="section-header"><span class="section-title">SSH</span></div>

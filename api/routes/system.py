@@ -20,6 +20,9 @@ POST /webui/restart — restart the WebUI; refused while an update or a module
                  while other jobs run unless {"force": true}
 POST /reboot   — reboot the system
 POST /shutdown — shut down the system
+GET  /certificate — the WebUI certificate's fingerprints, names, addresses and
+                 expiry, and the fingerprint of FreedomNAS's own CA (served
+                 without credentials at /freedomnas-ca.crt)
 GET  /config   — download this appliance's configuration
 POST /config   — load a configuration back and apply it
 """
@@ -37,7 +40,7 @@ from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
 from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
-from freedomnas import bootstate, replication, shadow
+from freedomnas import bootstate, replication, shadow, tls
 from api import restart
 from api.deps import authenticate, get_config, get_engine
 from api.routes import plugins
@@ -272,6 +275,14 @@ async def webui_restart(body: dict = None, username: str = Depends(authenticate)
     except OSError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": "Restarting", "started": restart.STARTED}
+
+
+@router.get("/certificate")
+async def certificate(username: str = Depends(authenticate)):
+    try:
+        return await asyncio.to_thread(tls.describe)
+    except (OSError, ValueError) as exc:
+        return JSONResponse(status_code=404, content={"detail": f"No certificate: {exc}"})
 
 
 @router.post("/reboot")

@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tzSelect = document.getElementById('f-timezone');
   if (tzSelect) fillTimezones(tzSelect, 'UTC');
   await loadSystemInfo();
+  loadCertificate();
 
   document.getElementById('form-hostname').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -103,6 +104,17 @@ async function loadAutorollback() {
       box.disabled = false;
     }
   });
+}
+
+async function loadCertificate() {
+  let d;
+  try { d = await apiJSON('GET', '/api/system/certificate'); } catch { return; }
+  if (!d.ca_fingerprint) return;
+  document.getElementById('cert-ca').textContent = d.ca_fingerprint;
+  document.getElementById('cert-fp').textContent = d.fingerprint;
+  document.getElementById('cert-names').textContent = [...d.names, ...d.addresses].join(', ');
+  document.getElementById('cert-expires').textContent = new Date(d.expires).toLocaleDateString();
+  document.getElementById('certificate-section').hidden = false;
 }
 
 async function loadSystemInfo() {
