@@ -21,6 +21,7 @@ from freedomnas.engine import (
     get_engine as _get_engine,
 )
 from freedomnas.config import ConfigurationManager
+from freedomnas import shadow
 
 logger = logging.getLogger("freedomnas.webui.auth")
 
@@ -54,6 +55,7 @@ def get_config() -> ConfigurationManager:
     global _config
     if _config is None:
         _config = ConfigurationManager()
+        _config.on_save.append(shadow.mirror_after_save(get_engine()))
     return _config
 
 
