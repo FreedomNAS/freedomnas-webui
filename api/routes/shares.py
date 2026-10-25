@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas import datasets as zfs_datasets
-from freedomnas import groupshares, usershares
+from freedomnas import groupshares
 from api.deps import authenticate, get_config, get_engine
 
 router = APIRouter()
@@ -72,7 +72,7 @@ def _smb_preflight(engine) -> bool:
 async def list_smb(username: str = Depends(authenticate)):
     config = get_config()
     return {"shares": [
-        {**s, "members": groupshares.members(config, s["group"])} if s.get("group") else s
+        {**s, "members": groupshares.members_of(config, s["group"])} if s.get("group") else s
         for s in config.get_smb_shares()]}
 
 
@@ -137,28 +137,13 @@ async def create_smb(body: dict, username: str = Depends(authenticate)):
 def _create_group_smb(engine, config, body: dict, share_name: str, path: str,
                       comment: str, read_only: bool):
     group = str(body.get("group") or "").strip()
-    wanted = body.get("members")
-    everyone = bool(body.get("everyone", False))
-    if everyone:
-        wanted = [u["username"] for u in config.get_users() if u.get("username")]
+    wanted = body.get("members") or []
     if not isinstance(wanted, list) or not all(isinstance(m, str) for m in wanted):
         return JSONResponse(status_code=422, content={"detail": "members must be a list of account names"})
     try:
-        groupshares.check_new_group(engine, config, group)
-        groupshares.check_accounts(config, wanted)
-        groupshares.ensure_group(engine, group)
-        groupshares.give_to_group(engine, path, group)
-        members = groupshares.set_members(engine, config, group, set(wanted) | set(groupshares.members(config, group)))
-        usershares.group_settings(engine)
-        add_smb_share(engine, config, {
-            "name": share_name,
-            "path": path,
-            "comment": comment,
-            "acl": f"Unix Group\\{group}:{'R' if read_only else 'F'}",
-            "read_only": read_only,
-            "group": group,
-            "everyone": everyone,
-        })
+        members = groupshares.create(engine, config, share_name, path, group, wanted,
+                                     everyone=bool(body.get("everyone", False)),
+                                     read_only=read_only, comment=comment)
     except (groupshares.GroupShareProblem, zfs_datasets.DatasetProblem) as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except (CommandExecutionError, CommandTranslationError, ConfigurationException, OSError) as exc:
@@ -186,16 +171,6 @@ async def set_smb_members(share_name: str, body: dict, username: str = Depends(a
     return {"name": share_name, "group": share["group"], "members": members}
 
 
-def _forget_group(engine, config, share: dict) -> None:
-    """After a group share is removed from the configuration."""
-    group = share.get("group")
-    if not group:
-        return
-    groupshares.take_back(engine, share["path"], group)
-    if group not in groupshares.share_groups(config):
-        groupshares.drop_group(engine, config, group)
-
-
 def add_smb_share(engine, config, share: dict) -> None:
     engine.execute(
         "samba", "create_share",
@@ -220,7 +195,7 @@ async def delete_smb(share_name: str, username: str = Depends(authenticate)):
         shares = [s for s in config.get_smb_shares() if s.get("name") != share_name]
         config.set("shares.smb", shares)
         if removed:
-            _forget_group(engine, config, removed)
+            groupshares.forget(engine, config, removed)
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"detail": f"Share {share_name} deleted"}
@@ -368,7 +343,7 @@ def remove_share(engine, config, kind: str, share: dict) -> None:
         engine.execute("samba", "delete_share", share_name=share["name"], check=False)
         engine.execute("samba", "reload_config")
         config.remove_smb_share(share["name"])
-        _forget_group(engine, config, share)
+        groupshares.forget(engine, config, share)
     else:
         engine.execute("nfs", "export_remove", path=share["path"])
         engine.execute("nfs", "exportfs_reload")
