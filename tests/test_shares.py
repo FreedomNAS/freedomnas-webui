@@ -93,7 +93,7 @@ def test_a_share_of_a_new_dataset_goes_to_whoever_shares_it(client, engine, conf
     r = client.post("/api/shares/smb", {"name": "foto", "path": "/tank/foto"})
     assert r.status == 200 and r.body["owner"] == "admin" and "warning" not in r.body
     assert engine.called("directories", "owner_set")[0].argv == ["chown", "admin", "/tank/foto"]
-    assert engine.called("directories", "mode_set")[0].argv == ["chmod", "0700", "/tank/foto"]
+    assert engine.called("directories", "mode_set")[0].argv == ["chmod", "00700", "/tank/foto"]
 
 
 def test_a_share_keeps_the_owner_its_dataset_was_given(client, engine, config, smb_ready, dataset_dir):
@@ -219,3 +219,94 @@ def test_an_nfs_share_is_removed_line_and_record(client, engine, config, tmp_pat
 def test_removing_an_unknown_nfs_share_is_404(client, engine):
     assert client.delete("/api/shares/nfs/nope").status == 404
     assert engine.actions() == []
+
+
+# ---------------------------------------------------------------------------
+# Group shares
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def family(config):
+    for name in ("luca", "anna", "mario"):
+        config.add_user({"username": name, "groups": []})
+
+
+def test_a_group_share_gives_the_dataset_to_a_new_group(client, engine, config, smb_ready, dataset_dir, family):
+    r = client.post("/api/shares/smb", {"name": "Famiglia", "path": "/tank/foto",
+                                        "group": "famiglia", "members": ["luca", "anna"]})
+    assert r.status == 200 and r.body["members"] == ["anna", "luca"]
+    argv = lambda action: [c.argv for c in engine.called("directories", action)]
+    assert engine.called("users", "group_create")[0].argv == ["groupadd", "famiglia"]
+    assert engine.called("zfs", "dataset_set")[0].argv == ["zfs", "set", "acltype=posixacl", "tank/foto"]
+    assert argv("owner_set") == [["chown", "root", "/tank/foto"]]
+    assert argv("group_set_recursive") == [["chgrp", "-R", "famiglia", "/tank/foto"]]
+    assert argv("mode_set") == [["chmod", "2770", "/tank/foto"]]
+    assert argv("acl_group_set") == [["setfacl", "-R", "-m",
+                                      "g:famiglia:rwX,d:g:famiglia:rwX,m::rwX,d:m::rwX", "/tank/foto"]]
+    assert sorted(c.kwargs["username"] for c in engine.called("users", "add_to_group")) == ["anna", "luca"]
+    assert engine.called("samba", "create_share")[0].argv[-1] == "Unix Group\\famiglia:F"
+    saved = config.get_smb_share("Famiglia")
+    assert saved["group"] == "famiglia" and saved["everyone"] is False and "owner" not in saved
+    assert config.get_user("luca")["groups"] == ["famiglia"]
+    assert config.get_user("mario")["groups"] == []
+    assert "create mask = 0770" in (engine.paths[("samba", "config_file")]).read_text()
+
+
+def test_a_group_share_for_everyone_takes_every_account_and_the_new_ones(
+        client, engine, config, smb_ready, dataset_dir, family):
+    r = client.post("/api/shares/smb", {"name": "media", "path": "/tank/foto",
+                                        "group": "media", "everyone": True})
+    assert r.status == 200
+    assert {u["username"] for u in config.get_users() if "media" in u.get("groups", [])} == {
+        "luca", "anna", "mario"}
+    assert client.post("/api/users/", {"username": "nuova", "password": "una-password"}).status == 200
+    [create] = engine.called("users", "create")
+    assert "media" in create.argv
+    assert "media" in config.get_user("nuova")["groups"]
+
+
+@pytest.mark.parametrize("group", ["Famiglia", "1abc", "a b", "x" * 32, ""])
+def test_a_group_share_needs_a_valid_group_name(client, engine, smb_ready, dataset_dir, family, group):
+    r = client.post("/api/shares/smb", {"name": "f", "path": "/tank/foto", "group": group or " ",
+                                        "members": []})
+    assert r.status == 422
+    assert engine.called("users", "group_create") == []
+
+
+def test_a_group_share_never_takes_over_a_group_of_the_system(client, engine, smb_ready, dataset_dir, family):
+    engine.outputs[("users", "group_exists")] = "video:x:44:"
+    r = client.post("/api/shares/smb", {"name": "video", "path": "/tank/foto", "group": "video", "members": []})
+    assert r.status == 422 and "already a group" in r.body["detail"]
+    assert engine.called("directories", "owner_set") == []
+
+
+def test_unknown_members_change_nothing(client, engine, smb_ready, dataset_dir, family):
+    r = client.post("/api/shares/smb", {"name": "f", "path": "/tank/foto", "group": "f", "members": ["nessuno"]})
+    assert r.status == 422 and "nessuno" in r.body["detail"]
+    assert engine.called("users", "group_create") == []
+    assert engine.called("directories", "owner_set") == []
+
+
+def test_the_members_of_a_group_share_can_change(client, engine, config, smb_ready, dataset_dir, family):
+    client.post("/api/shares/smb", {"name": "Famiglia", "path": "/tank/foto",
+                                    "group": "famiglia", "members": ["luca", "anna"]})
+    r = client.put("/api/shares/smb/Famiglia/members", {"members": ["luca", "mario"], "everyone": True})
+    assert r.status == 200 and r.body["members"] == ["luca", "mario"]
+    [removed] = engine.called("users", "remove_from_group")
+    assert removed.kwargs == {"group": "famiglia", "username": "anna"}
+    assert config.get_user("anna")["groups"] == []
+    assert config.get_smb_share("Famiglia")["everyone"] is True
+    listed = client.get("/api/shares/smb").body["shares"][0]
+    assert listed["members"] == ["luca", "mario"]
+
+
+def test_removing_a_group_share_gives_the_directory_back_to_root(
+        client, engine, config, smb_ready, dataset_dir, family):
+    client.post("/api/shares/smb", {"name": "Famiglia", "path": "/tank/foto",
+                                    "group": "famiglia", "members": ["luca"]})
+    assert client.delete("/api/shares/smb/Famiglia").status == 200
+    assert engine.called("directories", "acl_group_remove")[0].argv == [
+        "setfacl", "-R", "-x", "g:famiglia,d:g:famiglia", "/tank/foto"]
+    assert engine.called("directories", "group_set_recursive")[-1].argv == ["chgrp", "-R", "root", "/tank/foto"]
+    assert engine.called("users", "group_delete")[0].argv == ["groupdel", "famiglia"]
+    assert config.get_user("luca")["groups"] == []

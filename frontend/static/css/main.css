@@ -571,7 +571,8 @@ code {
   gap: 8px;
   cursor: pointer;
 }
-.checkbox-group input[type="checkbox"] {
+.checkbox-group input[type="checkbox"],
+.checkbox-group input[type="radio"] {
   width: 15px; height: 15px;
   accent-color: var(--accent);
   cursor: pointer;

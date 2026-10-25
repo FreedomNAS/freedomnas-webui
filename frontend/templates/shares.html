@@ -46,7 +46,33 @@
           <input id="f-share-path" class="input" type="text" required
                  placeholder="/mnt/datapool/media" autocomplete="off" spellcheck="false">
         </div>
-        <div class="form-group">
+        <div class="form-group smb-only">
+          <label class="form-label">Who uses it</label>
+          <label class="checkbox-group">
+            <input type="radio" name="f-share-kind" id="f-kind-owner" value="owner" checked>
+            <label for="f-kind-owner">One account</label>
+          </label>
+          <label class="checkbox-group">
+            <input type="radio" name="f-share-kind" id="f-kind-group" value="group">
+            <label for="f-kind-group">A group of accounts, who all read and write each other's files</label>
+          </label>
+        </div>
+        <div id="group-fields" hidden>
+          <div class="form-group">
+            <label class="form-label" for="f-share-group">Group</label>
+            <input id="f-share-group" class="input" type="text" placeholder="family" autocomplete="off" spellcheck="false">
+            <span class="form-hint">A Unix group made for this share; the dataset and everything in it becomes the group's.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Members</label>
+            <label class="checkbox-group">
+              <input type="checkbox" id="f-share-everyone" checked>
+              <label for="f-share-everyone">Every account, also those added later</label>
+            </label>
+            <div id="f-share-members" hidden></div>
+          </div>
+        </div>
+        <div class="form-group" id="owner-field">
           <label class="form-label" for="f-share-owner">Owner</label>
           <select id="f-share-owner" class="select"></select>
           <span class="form-hint">Only this account can use the share. When the path is a dataset's own directory, the directory becomes theirs alone.</span>
@@ -76,6 +102,30 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-close>Cancel</button>
         <button type="submit" id="btn-share-submit" class="btn btn-primary">Create Share</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-members" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Members of <span id="members-share"></span></span>
+      <button class="modal-close" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form id="form-members">
+      <div class="modal-body">
+        <label class="checkbox-group">
+          <input type="checkbox" id="m-everyone">
+          <label for="m-everyone">Also every account added later</label>
+        </label>
+        <div id="m-members" style="margin-top:10px"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" id="btn-members-submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>

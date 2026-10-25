@@ -18,12 +18,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('form-share').reset();
     fillOwnerSelect(document.getElementById('f-share-owner'),
       'Automatic — whoever the dataset was given to, or you');
+    fillMembers(document.getElementById('f-share-members'), []);
+    showKind();
     openModal('modal-share');
   });
 
   bindModalClose('modal-share');
+  bindModalClose('modal-members');
+  document.querySelectorAll('input[name="f-share-kind"]').forEach(r => r.addEventListener('change', showKind));
+  document.getElementById('f-share-everyone').addEventListener('change', showKind);
+  document.getElementById('f-share-name').addEventListener('input', () => {
+    const g = document.getElementById('f-share-group');
+    if (!g.dataset.touched) g.value = groupFromName(document.getElementById('f-share-name').value);
+  });
+  document.getElementById('f-share-group').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
+  document.getElementById('form-members').addEventListener('submit', saveMembers);
 
   document.getElementById('panel-smb').addEventListener('click', (e) => {
+    const members = e.target.closest('[data-members]');
+    if (members) { editMembers(members.dataset.members); return; }
     const btn = e.target.closest('[data-share]');
     if (btn) deleteSmb(btn.dataset.share);
   });
@@ -57,11 +70,85 @@ function switchTab(tab) {
   else loadNfs();
 }
 
+let _smbShares = [];
+
+function shareKind() {
+  return document.getElementById('f-share-type').value === 'smb'
+    && document.getElementById('f-kind-group').checked ? 'group' : 'owner';
+}
+
+function showKind() {
+  const group = shareKind() === 'group';
+  document.getElementById('group-fields').hidden = !group;
+  document.getElementById('owner-field').hidden = group;
+  document.getElementById('f-share-members').hidden = document.getElementById('f-share-everyone').checked;
+  const g = document.getElementById('f-share-group');
+  delete g.dataset.touched;
+  g.value = groupFromName(document.getElementById('f-share-name').value);
+}
+
+function groupFromName(name) {
+  return name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z_]+/, '').replace(/-+$/, '').slice(0, 31);
+}
+
+async function fillMembers(el, checked) {
+  el.replaceChildren();
+  let names = [];
+  try { names = (await apiJSON('GET', '/api/users/')).users.map(u => u.username); }
+  catch (e) { el.textContent = e.message; return; }
+  names.forEach(n => {
+    const row = document.createElement('label');
+    row.className = 'checkbox-group';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = n;
+    box.id = `${el.id}-${n}`;
+    box.checked = checked.includes(n);
+    const text = document.createElement('label');
+    text.htmlFor = box.id;
+    text.textContent = n;
+    row.append(box, text);
+    el.append(row);
+  });
+}
+
+function checkedMembers(el) {
+  return [...el.querySelectorAll('input[type="checkbox"]:checked')].map(b => b.value);
+}
+
+async function editMembers(name) {
+  const share = _smbShares.find(s => s.name === name);
+  if (!share) return;
+  document.getElementById('members-share').textContent = share.name;
+  document.getElementById('form-members').dataset.share = share.name;
+  document.getElementById('m-everyone').checked = !!share.everyone;
+  await fillMembers(document.getElementById('m-members'), share.members || []);
+  openModal('modal-members');
+}
+
+async function saveMembers(e) {
+  e.preventDefault();
+  const name = e.target.dataset.share;
+  const btn = document.getElementById('btn-members-submit');
+  setLoading(btn, true, 'Saving…');
+  try {
+    await apiJSON('PUT', `/api/shares/smb/${encodeURIComponent(name)}/members`, {
+      members: checkedMembers(document.getElementById('m-members')),
+      everyone: document.getElementById('m-everyone').checked,
+    });
+    toast(`Members of "${name}" saved.`, 'ok');
+    closeModal('modal-members');
+    loadSmb();
+  } catch (err) { toast(`Error: ${err.message}`, 'err'); }
+  finally { setLoading(btn, false); }
+}
+
 async function loadSmb() {
   const el = document.getElementById('panel-smb');
   el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
   try {
     const d = await apiJSON('GET', '/api/shares/smb');
+    _smbShares = d.shares || [];
     if (!d.shares?.length) { el.innerHTML = emptyShares('SMB'); return; }
     el.innerHTML = `
       <div class="table-wrap">
@@ -72,9 +159,12 @@ async function loadSmb() {
               <tr>
                 <td class="font-bold">${esc(s.name)}</td>
                 <td class="mono muted">${esc(s.path)}</td>
-                <td class="muted">${esc((s.valid_users || []).join(', '))}</td>
+                <td class="muted">${s.group
+                  ? `<span class="badge badge-muted">Group ${esc(s.group)}</span> ${esc((s.members || []).join(', '))}${s.everyone ? ' (and every new account)' : ''}`
+                  : esc((s.valid_users || []).join(', '))}</td>
                 <td>${s.read_only ? `<span class="badge badge-muted">Read Only</span>` : `<span class="badge badge-ok">Read/Write</span>`}</td>
                 <td class="col-actions">
+                  ${s.group ? `<button class="btn btn-secondary btn-sm" data-members="${esc(s.name)}">Members</button>` : ''}
                   <button class="btn btn-danger btn-sm" data-share="${esc(s.name)}">Remove</button>
                 </td>
               </tr>`).join('')}
@@ -117,6 +207,20 @@ async function createSmb() {
   const ro    = document.getElementById('f-share-ro').checked;
   const owner = document.getElementById('f-share-owner').value;
   if (!name || !path) { toast('Name and path are required.', 'warn'); throw new Error('validation'); }
+  if (shareKind() === 'group') {
+    const everyone = document.getElementById('f-share-everyone').checked;
+    try {
+      const res = await apiJSON('POST', '/api/shares/smb', {
+        name, path, read_only: ro, group: document.getElementById('f-share-group').value.trim(), everyone,
+        members: everyone ? [] : checkedMembers(document.getElementById('f-share-members')),
+      });
+      toast(`SMB share "${name}" created for the group ${res.group}.`, 'ok');
+    } catch (e) {
+      toast(`Error: ${e.message}`, 'err');
+      throw e;
+    }
+    return;
+  }
   try {
     const res = await apiJSON('POST', '/api/shares/smb', { name, path, read_only: ro, owner });
     toast(`SMB share "${name}" created for ${res.owner}.`, 'ok');
