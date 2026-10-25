@@ -141,6 +141,35 @@ def _basic_credentials(request: Request) -> tuple:
     return username, password
 
 
+# Samba keeps passwords of its own, and an account that existed before
+# FreedomNAS (an install onto a running system, a restored one) has none
+# there: no password opens a share for it. An administrator who signs in here
+# gives it, once per account and process, the password PAM just accepted.
+_samba_checked: set = set()
+_samba_lock = threading.Lock()
+
+
+def _samba_account(username: str, password: str) -> None:
+    with _samba_lock:
+        if username in _samba_checked:
+            return
+        _samba_checked.add(username)
+    if "\n" in password or "\r" in password:
+        return
+    engine = get_engine()
+    try:
+        engine.execute("samba", "check_installed")
+        stdout, _ = engine.execute("samba", "user_exists", username=username, check=False)
+        if stdout.strip():
+            return
+        payload = engine.get_profile_value("samba", "password_stdin_format")
+        engine.execute_with_stdin("samba", "set_user_password",
+                                  payload.format(username=username, password=password), username=username)
+        logger.info("%s had no Samba password: given the one used to sign in", username)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        logger.warning("Could not check the Samba password of %s: %s", username, exc)
+
+
 def authenticate(request: Request) -> str:
     """
     Verify credentials via PAM and require an administrator.
@@ -156,4 +185,5 @@ def authenticate(request: Request) -> str:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account is not an administrator",
         )
+    _samba_account(username, password)
     return username

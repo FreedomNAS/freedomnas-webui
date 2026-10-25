@@ -93,3 +93,22 @@ def test_the_api_waits_for_setup(client, fresh_config):
 def test_status_and_setup_are_reachable_before_setup(anonymous, fresh_config):
     assert anonymous.get("/api/system/status").status == 200
     assert anonymous.get("/api/setup/status").status == 200
+
+
+def test_an_administrator_without_a_samba_password_gets_the_one_used_to_sign_in(client, engine):
+    import api.deps as deps
+    deps._samba_checked.discard("admin")
+    assert client.get("/api/shares/smb").status == 200
+    [given] = engine.called("samba", "set_user_password")
+    assert given.argv == ["smbpasswd", "-a", "-s", "admin"]
+    assert given.stdin == "admin-password\nadmin-password\n"
+    client.get("/api/shares/smb")
+    assert len(engine.called("samba", "user_exists")) == 1
+
+
+def test_an_administrator_samba_already_knows_keeps_its_samba_password(client, engine):
+    import api.deps as deps
+    deps._samba_checked.discard("admin")
+    engine.outputs[("samba", "user_exists")] = "admin:1000:"
+    assert client.get("/api/shares/smb").status == 200
+    assert engine.called("samba", "set_user_password") == []

@@ -202,6 +202,8 @@ def setup_pending_file(monkeypatch, tmp_path):
 def clean_module_state():
     deps._failures.clear()
     deps._locked_until.clear()
+    deps._samba_checked.clear()
+    deps._samba_checked.update(ACCOUNTS)
     updates_routes._pending.update(count=None, checked_at=None, error=None)
     updates_routes._refresh = None
     yield
