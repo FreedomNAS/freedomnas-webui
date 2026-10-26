@@ -143,6 +143,24 @@
       <button id="btn-next-4" class="btn btn-primary">Review</button>
     </div>
 
+    <div id="step-accounts" class="wizard-body" hidden>
+      <p class="text-muted text-sm" id="acc-progress"></p>
+      <div class="form-group">
+        <label class="form-label" for="f-acc-pass">Temporary password for <strong id="acc-name"></strong></label>
+        <input id="f-acc-pass" class="input" type="password" autocomplete="new-password">
+        <span class="form-hint">Restored accounts come back without their passwords. Give this one to its owner:
+          they have to change it at their first sign-in, or on this NAS's <strong>/password/</strong> page.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-acc-pass2">The same password again</label>
+        <input id="f-acc-pass2" class="input" type="password" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="wizard-footer" id="footer-accounts" hidden>
+      <button id="btn-back-accounts" class="btn btn-secondary">Back</button>
+      <button id="btn-next-accounts" class="btn btn-primary">Next</button>
+    </div>
+
     <div id="step-5" class="wizard-body" hidden>
       <div class="card" style="padding:16px">
         <table style="width:100%;font-size:0.875rem">

@@ -7,6 +7,7 @@ from freedomnas.engine import CommandExecutionError
 import api.routes.setup as setup_routes
 
 LOGIN_PASSWORD = ACCOUNTS["admin"][0]
+TEMPORARY = "Temporanea-2026"
 NEW_PASSWORD = "a-new-secret"
 
 
@@ -254,12 +255,15 @@ def test_finishing_a_restore_takes_over_the_restored_administrator(
         restored, engine, fresh_config, setup_pending_file, monkeypatch):
     monkeypatch.setitem(ACCOUNTS, "sarah", ("unknown", ["sarah", "sudo"]))
     r = restored.post("/api/setup/initialize",
-                      {"admin": {"username": "sarah", "password": NEW_PASSWORD, "remove_default": True}})
+                      {"admin": {"username": "sarah", "password": NEW_PASSWORD, "remove_default": True},
+                       "users": {"mario": TEMPORARY}})
     assert r.status == 200
     assert r.body == {"detail": "System restored", "hostname": "oldnas", "admin": "sarah",
-                      "without_password": ["mario"]}
+                      "temporary_passwords": ["mario"]}
     assert engine.called("users", "create") == []
-    assert [c.stdin for c in engine.called("users", "set_password_stdin")] == [f"sarah:{NEW_PASSWORD}\n"]
+    assert [c.stdin for c in engine.called("users", "set_password_stdin")] == [
+        f"sarah:{NEW_PASSWORD}\n", f"mario:{TEMPORARY}\n"]
+    assert [c.argv for c in engine.called("users", "password_expire")] == [["chage", "-d", "0", "mario"]]
     [delete] = engine.called("users", "delete")
     assert delete.argv[-1] == "admin"
     assert engine.called("services", "enable") == []
@@ -276,7 +280,8 @@ def test_finishing_a_restore_takes_over_the_restored_administrator(
 
 
 def test_ssh_comes_back_only_when_asked(restored, engine, fresh_config):
-    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True})
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True,
+                                                "users": {"mario": TEMPORARY, "sarah": TEMPORARY}})
     assert r.status == 200 and r.body["admin"] == "admin"
     assert [c.kwargs["service_name"] for c in engine.called("services", "enable")] == ["ssh"]
     assert fresh_config.get("system.ssh_enabled") is True
@@ -288,7 +293,8 @@ def test_a_failed_restore_keeps_the_password_it_was_opened_with(
     from freedomnas.engine import CommandExecutionError
     engine.outputs[("services", "start")] = CommandExecutionError(
         "warning: ssh: unable to open supervise/control: file does not exist")
-    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True})
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "ssh": True,
+                                                "users": {"mario": TEMPORARY, "sarah": TEMPORARY}})
     assert r.status == 500
     assert engine.called("users", "set_password_stdin") == []
     assert setup_pending_file.exists()
@@ -326,7 +332,8 @@ def test_an_installation_keeps_the_password_chosen_in_the_installer(admin, setup
 def test_a_restore_after_an_installation_keeps_the_chosen_password(
         restored, engine, setup_pending_file):
     setup_pending_file.write_text("install\n")
-    r = restored.post("/api/setup/initialize", {"admin": {"password": LOGIN_PASSWORD}})
+    r = restored.post("/api/setup/initialize", {"admin": {"password": LOGIN_PASSWORD},
+                                                "users": {"mario": TEMPORARY, "sarah": TEMPORARY}})
     assert r.status == 200
     assert not setup_pending_file.exists()
 
@@ -338,3 +345,21 @@ def test_the_administrator_joins_the_admin_groups_this_system_has(admin, engine,
     assert joined.kwargs == {"username": "admin", "group": "docker"}
     entry = next(u for u in fresh_config.get_users() if u["username"] == "admin")
     assert (entry["groups"], entry["admin"]) == (["docker"], True)
+
+
+def test_a_restore_needs_a_temporary_password_for_every_restored_account(restored, engine, setup_pending_file):
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD}, "users": {"mario": TEMPORARY}})
+    assert r.status == 422 and "sarah" in r.body["detail"]
+    r = restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD},
+                                                "users": {"mario": "short", "sarah": TEMPORARY}})
+    assert r.status == 422 and r.body["detail"].startswith("mario:")
+    assert engine.called("users", "set_password_stdin") == []
+    assert setup_pending_file.exists()
+
+
+def test_restored_accounts_are_recorded_with_a_temporary_password(restored, engine, fresh_config):
+    restored.post("/api/setup/initialize", {"admin": {"password": NEW_PASSWORD},
+                                            "users": {"mario": TEMPORARY, "sarah": TEMPORARY}})
+    users = {u["username"]: u for u in fresh_config.get_users()}
+    assert users["mario"]["temporary_password"] is True and users["sarah"]["temporary_password"] is True
+    assert "temporary_password" not in users["admin"]

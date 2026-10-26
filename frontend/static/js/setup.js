@@ -53,6 +53,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   let devicesLoaded = false;
 
   const steps = [1, 2, 3, 4, 5].reduce((acc, n) => ({ ...acc, [n]: document.getElementById(`step-${n}`) }), {});
+  steps.accounts = document.getElementById('step-accounts');
+  const temporary = {};
+  let waiting = [];
+  let current = 0;
   if (restored) showRestore();
   showStep(1);
 
@@ -78,8 +82,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (pass2 !== pass) { fieldErr('f-admin-pass2', 'The passwords differ.'); ok = false; }
     else clearErr('f-admin-pass2');
     if (ok) {
-      if (restored) { buildSummary(); showStep(5); } else showStep(2);
+      if (!restored) { showStep(2); return; }
+      const keeper = name || login;
+      waiting = [...restored.admins, ...restored.users].filter(u => u !== keeper && u !== login);
+      Object.keys(temporary).filter(u => !waiting.includes(u)).forEach(u => delete temporary[u]);
+      if (waiting.length) { current = 0; showAccount(); } else { buildSummary(); showStep(5); }
     }
+  });
+
+  function showAccount() {
+    const user = waiting[current];
+    document.getElementById('acc-name').textContent = user;
+    document.getElementById('acc-progress').textContent = `Restored account ${current + 1} of ${waiting.length}`;
+    document.getElementById('f-acc-pass').value = temporary[user] || '';
+    document.getElementById('f-acc-pass2').value = temporary[user] || '';
+    clearErr('f-acc-pass');
+    clearErr('f-acc-pass2');
+    showStep('accounts');
+    document.getElementById('f-acc-pass').focus();
+  }
+
+  document.getElementById('btn-next-accounts').addEventListener('click', () => {
+    const pass = document.getElementById('f-acc-pass').value;
+    const pass2 = document.getElementById('f-acc-pass2').value;
+    if (pass.length < MIN_PASSWORD) { fieldErr('f-acc-pass', `At least ${MIN_PASSWORD} characters.`); return; }
+    clearErr('f-acc-pass');
+    if (pass2 !== pass) { fieldErr('f-acc-pass2', 'The passwords differ.'); return; }
+    clearErr('f-acc-pass2');
+    temporary[waiting[current]] = pass;
+    if (current + 1 < waiting.length) { current += 1; showAccount(); return; }
+    buildSummary();
+    showStep(5);
+  });
+
+  document.getElementById('btn-back-accounts').addEventListener('click', () => {
+    if (current > 0) { current -= 1; showAccount(); } else showStep(1);
   });
 
   document.getElementById('btn-back-2').addEventListener('click', () => showStep(1));
@@ -112,7 +149,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStep(5);
   });
 
-  document.getElementById('btn-back-5').addEventListener('click', () => showStep(restored ? 1 : 4));
+  document.getElementById('btn-back-5').addEventListener('click', () => {
+    if (!restored) showStep(4);
+    else if (waiting.length) { current = waiting.length - 1; showAccount(); }
+    else showStep(1);
+  });
   document.getElementById('btn-initialize').addEventListener('click', initialize);
   document.getElementById('btn-go-auth').addEventListener('click', () => {
     sessionStorage.removeItem('fnas_auth');
@@ -126,7 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const from = restored.state_dataset ? ` from ${restored.state_dataset}` : '';
     document.getElementById('restore-info-text').textContent =
       `This system restored the configuration of "${restored.hostname}"${from}: its users, shares and settings are back. ` +
-      'Restored accounts have no passwords yet.';
+      'Restored accounts come back without passwords: you will give each one a temporary password.';
     document.getElementById('restore-info').hidden = false;
     if (restored.admins.length) {
       document.getElementById('admin-name-hint').textContent =
@@ -239,6 +280,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           remove_default: document.getElementById('f-remove-default').checked,
         },
         ssh: document.getElementById('f-restore-ssh').checked,
+        users: { ...temporary },
       };
     }
     const body = {
@@ -272,7 +314,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       adminRow,
       ['Hostname', restored.hostname],
       ['Configuration on', restored.state_dataset || 'this system'],
-      ['Other users', restored.users.join(', ') || 'none'],
+      ['Temporary passwords', waiting.join(', ') || 'none'],
     ] : [
       adminRow,
       ['Hostname', b.hostname],

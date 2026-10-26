@@ -10,6 +10,7 @@ import binascii
 import logging
 import threading
 import time
+from typing import Optional
 
 import pam
 from fastapi import HTTPException, Request, status
@@ -59,6 +60,9 @@ def get_config() -> ConfigurationManager:
     return _config
 
 
+PAM_NEW_AUTHTOK_REQD = 12
+
+
 def verify_credentials(username: str, password: str) -> bool:
     """
     Check a username and password against PAM, with a lockout after repeated
@@ -68,17 +72,33 @@ def verify_credentials(username: str, password: str) -> bool:
     check: a browser cannot set an Authorization header on a WebSocket, so it
     sends the same Basic blob as its first frame instead.
     """
+    return check_password(username, password) == "ok"
+
+
+def check_password(username: str, password: str) -> Optional[str]:
+    """
+    "ok", "expired" (the right password, which has to be changed before the
+    account is used: a temporary one given after a restore), or None, with
+    the same lockout as signing in.
+    """
     now = time.monotonic()
     with _auth_lock:
         if now < _locked_until.get(username, 0.0):
             logger.warning("Authentication refused: %s is locked out", username)
-            return False
+            return None
 
-    if pam.pam().authenticate(username, password):
+    check = pam.pam()
+    if check.authenticate(username, password):
+        state = "ok"
+    elif getattr(check, "code", None) == PAM_NEW_AUTHTOK_REQD:
+        state = "expired"
+    else:
+        state = None
+    if state:
         with _auth_lock:
             _failures.pop(username, None)
             _locked_until.pop(username, None)
-        return True
+        return state
 
     with _auth_lock:
         recent = [t for t in _failures.get(username, []) if now - t < _WINDOW_SECONDS]
@@ -90,7 +110,7 @@ def verify_credentials(username: str, password: str) -> bool:
                 "%s locked out for %.0fs after %d failed attempts",
                 username, _LOCKOUT_SECONDS, len(recent),
             )
-    return False
+    return None
 
 
 def is_administrator(username: str) -> bool:

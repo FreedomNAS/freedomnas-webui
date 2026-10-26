@@ -112,7 +112,7 @@ function renderUser(u) {
   const isSelf = u.username === Auth.getUser();
   return `
     <tr>
-      <td class="font-bold">${esc(u.username)} ${isSelf ? '<span class="badge badge-info" style="margin-left:4px">you</span>' : ''}${u.admin ? '<span class="badge badge-ok" style="margin-left:4px">admin</span>' : ''}</td>
+      <td class="font-bold">${esc(u.username)} ${isSelf ? '<span class="badge badge-info" style="margin-left:4px">you</span>' : ''}${u.admin ? '<span class="badge badge-ok" style="margin-left:4px">admin</span>' : ''}${u.temporary_password ? '<span class="badge badge-warn" style="margin-left:4px" title="Given after a restore: its owner has not changed it yet (/password/)">temporary password</span>' : ''}</td>
       <td>${groups || '<span class="text-muted">—</span>'}</td>
       <td class="mono muted">${esc(u.shell || '/bin/bash')}</td>
       <td class="col-actions">

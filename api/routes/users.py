@@ -161,6 +161,31 @@ def create_account(engine, config, new_user: str, password: str, groups=(),
         raise
 
 
+def set_temporary_password(engine, config, username: str, password: str) -> None:
+    """
+    Give an account a password it must change before using the system (after
+    a restore, which brings accounts back without their passwords): set for
+    the system and Samba, expired (`users.password_expire`), and recorded as
+    temporary until its owner changes it (/api/account/password).
+    """
+    problem = password_problem(username, password)
+    if problem:
+        raise CommandTranslationError(problem)
+    _set_password(engine, username, password)
+    engine.execute("users", "password_expire", username=username)
+    user = config.get_user(username) or {"username": username}
+    config.add_user({**user, "temporary_password": True})
+
+
+def set_own_password(engine, config, username: str, password: str) -> None:
+    """An account's own new password: no longer expired nor temporary."""
+    _set_password(engine, username, password)
+    engine.execute("users", "password_fresh", username=username, check=False)
+    user = config.get_user(username)
+    if user and user.get("temporary_password"):
+        config.add_user({k: v for k, v in user.items() if k != "temporary_password"})
+
+
 def account_ids(engine, name: str) -> dict:
     """
     The user and group ID the system gave an account, for its configuration

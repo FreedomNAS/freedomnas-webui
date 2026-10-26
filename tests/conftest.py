@@ -54,9 +54,18 @@ ACCOUNTS = {
 }
 
 
+EXPIRED = set()
+
+
 class FakePam:
+    code = 0
+
     def authenticate(self, username, password):
-        return username in ACCOUNTS and ACCOUNTS[username][0] == password
+        right = username in ACCOUNTS and ACCOUNTS[username][0] == password
+        if right and username in EXPIRED:
+            self.code = 12
+            return False
+        return right
 
 
 sys.modules["pam"] = types.SimpleNamespace(pam=FakePam)

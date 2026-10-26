@@ -43,6 +43,8 @@ from api.routes.users import (
     _credentials_problem,
     _delete_samba_user,
     _set_password,
+    password_problem,
+    set_temporary_password,
 )
 
 logger = logging.getLogger("freedomnas.webui.setup")
@@ -290,6 +292,16 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         return JSONResponse(status_code=422, content={"detail": problem})
     if not isinstance(body.get("ssh", False), bool):
         return JSONResponse(status_code=422, content={"detail": "ssh must be true or false"})
+    keeper = (admin.get("username") or "").strip() or username
+    temporary = body.get("users") or {}
+    waiting = [u["username"] for u in config.get_users() if u.get("username") not in (keeper, username)]
+    if not isinstance(temporary, dict) or sorted(temporary) != sorted(waiting):
+        return JSONResponse(status_code=422, content={
+            "detail": f"A temporary password is needed for every restored account: {', '.join(waiting)}"})
+    for name in waiting:
+        problem = password_problem(name, str(temporary[name]))
+        if problem:
+            return JSONResponse(status_code=422, content={"detail": f"{name}: {problem}"})
 
     try:
         sudo_group = engine.get_profile_value("users", "sudo_group")
@@ -298,6 +310,8 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         config.set("system.edition", engine.os_type)
         usershares.prepare(engine)
         admin_name = _set_up_admin(engine, config, admin, username)
+        for name in waiting:
+            set_temporary_password(engine, config, name, str(temporary[name]))
         config.clear_setup_pending()
         shadow.sync(engine, str(config.config_path))
     except (
@@ -312,8 +326,5 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
         "detail": "System restored",
         "hostname": config.get_hostname(),
         "admin": admin_name,
-        "without_password": [
-            u["username"] for u in config.get_users()
-            if not _is_admin(u, sudo_group) and u["username"] not in (admin_name, username)
-        ],
+        "temporary_passwords": waiting,
     }
