@@ -23,11 +23,13 @@ from api.deps import get_config, get_engine
 from freedomnas import tls
 from freedomnas.engine import CommandTranslationError
 from api.module_discovery import discover_community_modules
-from api.routes import account, disks, network, plugins, services, setup, shares, storage, system, updates, users
+from api.routes import (account, disks, network, plugins, restore, services, setup, shares, storage, system,
+                        updates, users)
 from websocket import terminal
 
-EXEMPT_PREFIXES = ("/api/setup",)
+EXEMPT_PREFIXES = ("/api/setup", "/api/restore")
 EXEMPT_EXACT    = {"/api/system/status"}
+RESTORE_OPEN    = ("/restoring/", "/api/restore/", "/static/", "/freedomnas-ca.crt")
 
 
 @asynccontextmanager
@@ -80,6 +82,16 @@ async def first_run_guard(request: Request, call_next):
 
 
 @app.middleware("http")
+async def restore_guard(request: Request, call_next):
+    path = request.url.path
+    if path.startswith(RESTORE_OPEN) or restore.state() == "off":
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=503, content={"detail": "Restore in progress", "restoring": True})
+    return RedirectResponse("/restoring/", status_code=303)
+
+
+@app.middleware("http")
 async def revalidate_static(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/static/"):
@@ -102,6 +114,7 @@ app.include_router(disks.router,    prefix="/api/storage/disks", tags=["disks"])
 app.include_router(plugins.router,  prefix="/api/plugins", tags=["plugins"])
 app.include_router(setup.router,   prefix="/api/setup",   tags=["setup"])
 app.include_router(account.router, prefix="/api/account", tags=["account"])
+app.include_router(restore.router, prefix="/api/restore", tags=["restore"])
 app.include_router(terminal.router)
 
 for _mod in _community_modules:
@@ -211,6 +224,11 @@ async def root():
 @app.get("/auth/")
 async def page_auth(request: Request):
     return templates.TemplateResponse(request, "auth.html")
+
+
+@app.get("/restoring/")
+async def page_restoring(request: Request):
+    return templates.TemplateResponse(request, "restoring.html")
 
 
 @app.get("/password/")

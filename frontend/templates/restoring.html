@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Restore in Progress — FreedomNAS</title>
+  <link rel="icon" type="image/png" href="/static/img/logo_cut.png">
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+
+<div class="auth-wrap">
+  <div class="auth-card" style="max-width:560px">
+    <div class="auth-logo">
+      <img src="/static/img/logo_cut.png" alt="FreedomNAS logo" width="72" height="72">
+      <img src="/static/img/logo.png" alt="FreedomNAS" style="height:28px;width:auto;margin-top:4px">
+      <p id="restore-title">Restore in progress</p>
+    </div>
+
+    <p id="restore-intro" class="text-muted text-sm" style="margin:0 0 12px">
+      FreedomNAS is setting this system up again from the configuration kept on its pool.
+      This page follows each step; the WebUI opens by itself when it is done.
+    </p>
+
+    <div class="progress-wrap" style="margin-bottom:6px">
+      <div id="restore-bar" class="progress-bar" style="width:0%"></div>
+    </div>
+    <p id="restore-count" class="text-muted text-sm" style="margin:0 0 12px"></p>
+
+    <ol id="restore-steps" class="text-sm" style="margin:0 0 12px;padding-left:20px;max-height:50vh;overflow:auto"></ol>
+
+    <div id="restore-failed" class="alert alert-err" role="alert" hidden>
+      <div>
+        <strong>The restore finished with errors.</strong>
+        <div class="text-sm" style="margin-top:4px">The failed steps show why above. Continue opens the WebUI anyway; the next boot tries the failed steps again.</div>
+        <pre id="restore-errors" style="white-space:pre-wrap;margin:6px 0 0;font-size:0.75rem"></pre>
+      </div>
+    </div>
+
+    <button id="btn-continue" type="button" class="btn btn-primary w-full" hidden>
+      Continue to the WebUI
+    </button>
+  </div>
+</div>
+
+<script src="/static/js/restoring.js"></script>
+</body>
+</html>
