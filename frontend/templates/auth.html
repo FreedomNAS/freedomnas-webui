@@ -36,6 +36,28 @@
       </button>
     </form>
 
+    <form id="change-form" class="auth-form" autocomplete="on" novalidate hidden>
+      <p class="text-sm" style="margin:0 0 12px">
+        <strong id="change-user"></strong> has a temporary password. Choose your own before
+        continuing: it is used for signing in and for the shares (SMB).
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="field-new">New password</label>
+        <input id="field-new" class="input" type="password" autocomplete="new-password" required>
+        <span class="form-hint">At least 8 characters.</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="field-new2">New password again</label>
+        <input id="field-new2" class="input" type="password" autocomplete="new-password" required>
+      </div>
+
+      <div id="change-error" class="alert alert-err" role="alert" hidden></div>
+
+      <button id="btn-change" type="submit" class="btn btn-primary w-full" style="margin-top:4px">
+        Change Password and Sign In
+      </button>
+    </form>
+
     <div class="auth-footer">
       <a href="/password/">Change your password</a><br>
       FreedomNAS — Network Attached Storage

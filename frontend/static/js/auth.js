@@ -1,5 +1,7 @@
 'use strict';
 
+const PASSWORD_EXPIRED = 'Password expired';
+
 document.addEventListener('DOMContentLoaded', () => {
   const theme = localStorage.getItem('fnas_theme') || 'dark';
   document.documentElement.setAttribute('data-theme', theme);
@@ -14,6 +16,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const pass  = document.getElementById('field-pass');
   const err   = document.getElementById('auth-error');
   const btn   = document.getElementById('btn-login');
+  const change = document.getElementById('change-form');
+  const changeErr = document.getElementById('change-error');
+  const changeBtn = document.getElementById('btn-change');
+  let temporary = null;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -29,37 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
-      const headers = { 'Authorization': `Basic ${btoa(`${u}:${p}`)}` };
-      let res = await fetch('/api/system/info', { headers });
-      if (res.status === 503) res = await fetch('/api/setup/whoami', { headers });
-
-      if (res.status === 401) {
-        showError('Invalid username or password.');
-        pass.value = '';
-        pass.focus();
-        return;
-      }
-
-      if (res.status === 403) {
-        res = await fetch('/api/account/me', { headers });
-        if (res.ok) {
-          sessionStorage.setItem('fnas_auth', btoa(`${u}:${p}`));
-          sessionStorage.setItem('fnas_user', u);
-          location.href = '/account/';
-          return;
-        }
-        showError(`Unexpected response (${res.status}). Try again.`);
-        return;
-      }
-
-      if (res.ok) {
-        sessionStorage.setItem('fnas_auth', btoa(`${u}:${p}`));
-        sessionStorage.setItem('fnas_user', u);
-        redirectAfterLogin();
-        return;
-      }
-
-      showError(`Unexpected response (${res.status}). Try again.`);
+      await signIn(u, p);
     } catch (ex) {
       showError(`Connection error: ${ex.message}`);
     } finally {
@@ -67,9 +43,92 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  change.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    changeErr.hidden = true;
+    const fresh = document.getElementById('field-new').value;
+    if (fresh !== document.getElementById('field-new2').value) {
+      showChangeError('The new passwords differ.');
+      return;
+    }
+    changeBtn.disabled = true;
+    try {
+      const res = await fetch('/api/account/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: temporary.user, password: temporary.pass, new_password: fresh }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showChangeError(body.detail || `Error ${res.status}`);
+        return;
+      }
+      await signIn(temporary.user, fresh);
+    } catch (ex) {
+      showChangeError(`Connection error: ${ex.message}`);
+    } finally {
+      changeBtn.disabled = false;
+    }
+  });
+
+  async function signIn(u, p) {
+    const headers = { 'Authorization': `Basic ${btoa(`${u}:${p}`)}` };
+    let res = await fetch('/api/system/info', { headers });
+    if (res.status === 503) res = await fetch('/api/setup/whoami', { headers });
+
+    if (res.status === 401) {
+      const body = await res.json().catch(() => ({}));
+      if (body.detail === PASSWORD_EXPIRED) {
+        askNewPassword(u, p);
+        return;
+      }
+      showError('Invalid username or password.');
+      pass.value = '';
+      pass.focus();
+      return;
+    }
+
+    if (res.status === 403) {
+      res = await fetch('/api/account/me', { headers });
+      if (res.ok) {
+        remember(u, p);
+        location.href = '/account/';
+        return;
+      }
+      showError(`Unexpected response (${res.status}). Try again.`);
+      return;
+    }
+
+    if (res.ok) {
+      remember(u, p);
+      redirectAfterLogin();
+      return;
+    }
+
+    showError(`Unexpected response (${res.status}). Try again.`);
+  }
+
+  function askNewPassword(u, p) {
+    temporary = { user: u, pass: p };
+    document.getElementById('change-user').textContent = u;
+    form.hidden = true;
+    change.hidden = false;
+    document.getElementById('field-new').focus();
+  }
+
+  function remember(u, p) {
+    sessionStorage.setItem('fnas_auth', btoa(`${u}:${p}`));
+    sessionStorage.setItem('fnas_user', u);
+  }
+
   function showError(msg) {
     err.textContent = msg;
     err.hidden = false;
+  }
+
+  function showChangeError(msg) {
+    changeErr.textContent = msg;
+    changeErr.hidden = false;
   }
 
   function setLoginLoading(on) {

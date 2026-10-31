@@ -116,3 +116,26 @@ def test_a_module_that_fails_leaves_the_others_links(client, modules):
     modules.append(({"id": "broken"}, Broken("broken", [])))
     modules.append(({"id": "proxy"}, LinkModule("proxy", [{"name": "site", "scheme": "https", "port": 8443}])))
     assert [l["name"] for l in client.get("/api/account/me").body["links"]] == ["site"]
+
+
+def test_a_temporary_password_opens_nothing_but_its_change(client, config, mario, modules):
+    config.add_user({"username": "mario", "temporary_password": True})
+    EXPIRED.add("mario")
+    r = client.get("/api/account/me", auth=("mario", "Temporanea-2026"))
+    assert (r.status, r.body["detail"]) == (401, "Password expired")
+    assert change(client).status == 200
+    EXPIRED.discard("mario")
+    ACCOUNTS["mario"] = ("una-nuova-password", ["mario"])
+    assert client.get("/api/account/me", auth=("mario", "una-nuova-password")).status == 200
+
+
+def test_a_password_still_recorded_as_temporary_is_refused_even_when_pam_takes_it(client, config):
+    config.add_user({"username": "admin", "temporary_password": True})
+    r = client.get("/api/users/")
+    assert (r.status, r.body["detail"]) == (401, "Password expired")
+
+
+def test_a_wrong_password_is_not_told_apart_from_a_temporary_one(client, config, mario):
+    config.add_user({"username": "mario", "temporary_password": True})
+    r = client.get("/api/account/me", auth=("mario", "sbagliata"))
+    assert (r.status, r.body["detail"]) == (401, "Invalid credentials")

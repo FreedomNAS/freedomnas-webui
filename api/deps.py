@@ -61,18 +61,31 @@ def get_config() -> ConfigurationManager:
 
 
 PAM_NEW_AUTHTOK_REQD = 12
+PASSWORD_EXPIRED = "Password expired"
 
 
 def verify_credentials(username: str, password: str) -> bool:
     """
     Check a username and password against PAM, with a lockout after repeated
-    failures.
+    failures. A temporary password opens nothing until it is changed.
 
     Split out of authenticate() because the updates WebSocket needs the same
     check: a browser cannot set an Authorization header on a WebSocket, so it
     sends the same Basic blob as its first frame instead.
     """
-    return check_password(username, password) == "ok"
+    return signin_state(username, password) == "ok"
+
+
+def signin_state(username: str, password: str) -> Optional[str]:
+    """
+    check_password(), with "expired" also for a password the configuration
+    still records as temporary: an edition whose PAM does not say so must not
+    let it in either.
+    """
+    state = check_password(username, password)
+    if state == "ok" and (get_config().get_user(username) or {}).get("temporary_password"):
+        return "expired"
+    return state
 
 
 def check_password(username: str, password: str) -> Optional[str]:
@@ -190,14 +203,27 @@ def _samba_account(username: str, password: str) -> None:
         logger.warning("Could not check the Samba password of %s: %s", username, exc)
 
 
+def _signed_in(request: Request) -> tuple:
+    """
+    The credentials, once PAM accepts them: 401 when they are missing or
+    wrong, and 401 with PASSWORD_EXPIRED for a temporary password, which the
+    sign-in page then has its owner change (/api/account/password).
+    """
+    username, password = _basic_credentials(request)
+    state = signin_state(username, password)
+    if state == "expired":
+        raise _unauthorized(PASSWORD_EXPIRED)
+    if state != "ok":
+        raise _unauthorized("Invalid credentials")
+    return username, password
+
+
 def authenticate_account(request: Request) -> str:
     """
     Verify credentials via PAM, for what every account may see and do for
-    itself: 401 when they are missing or wrong.
+    itself.
     """
-    username, password = _basic_credentials(request)
-    if not verify_credentials(username, password):
-        raise _unauthorized("Invalid credentials")
+    username, password = _signed_in(request)
     _samba_account(username, password)
     return username
 
@@ -206,12 +232,10 @@ def authenticate(request: Request) -> str:
     """
     Verify credentials via PAM and require an administrator.
 
-    401 when the credentials are missing or wrong, 403 when they are right
-    but the account is not in the edition's admin group.
+    401 as in _signed_in(), 403 when the credentials are right but the
+    account is not in the edition's admin group.
     """
-    username, password = _basic_credentials(request)
-    if not verify_credentials(username, password):
-        raise _unauthorized("Invalid credentials")
+    username, password = _signed_in(request)
     if not is_administrator(username):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
