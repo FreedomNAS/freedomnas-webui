@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}My Account{% endblock %}
+{% block page_title %}My Account{% endblock %}
+
+{% block nav %}
+<a href="/dashboard/" class="nav-item" role="menuitem" id="nav-dashboard" hidden>
+  <svg><use href="#icon-dashboard"/></svg>
+  <span class="nav-item-label">Dashboard</span>
+</a>
+{% endblock %}
+
+{% block topbar_tools %}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>My Account</h1>
+    <p id="account-intro">Your account, your shares and the apps of this NAS</p>
+  </div>
+</div>
+
+<div class="grid-2 mb-6">
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px">Account</div>
+    <table style="width:100%;font-size:0.875rem">
+      <tbody>
+        <tr><td class="text-muted" style="padding:5px 0;width:90px">Name</td><td id="me-name" class="font-bold">—</td></tr>
+        <tr><td class="text-muted" style="padding:5px 0">Groups</td><td id="me-groups">—</td></tr>
+        <tr><td class="text-muted" style="padding:5px 0">NAS</td><td id="me-nas">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="margin-bottom:10px">Change Password</div>
+    <form id="form-password" novalidate>
+      <div class="form-group">
+        <label class="form-label" for="f-current">Current password</label>
+        <input id="f-current" class="input" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-new">New password</label>
+        <input id="f-new" class="input" type="password" autocomplete="new-password" required>
+        <span class="form-hint">At least 8 characters. Used for signing in and for the shares (SMB).</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="f-new2">New password again</label>
+        <input id="f-new2" class="input" type="password" autocomplete="new-password" required>
+      </div>
+      <button id="btn-password" type="submit" class="btn btn-primary">Change Password</button>
+    </form>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header"><span class="section-title">My Shares</span></div>
+  <div id="me-shares"><div class="card text-muted text-sm">Loading…</div></div>
+</div>
+
+<div class="section">
+  <div class="section-header"><span class="section-title">Apps</span></div>
+  <div id="me-apps"><div class="card text-muted text-sm">Loading…</div></div>
+</div>
+
+<div class="section" id="me-certificate" hidden>
+  <div class="section-header"><span class="section-title">Certificate</span></div>
+  <div class="card" style="max-width:480px">
+    <p class="text-sm" style="margin-bottom:10px">
+      This NAS signs its own certificates. Install its certificate authority once on each
+      computer or phone, as a trusted authority, and the browser warning goes away for this
+      page and for the apps.
+    </p>
+    <table style="width:100%;border-collapse:collapse">
+      <tr><td class="text-muted" style="padding:5px 0;width:110px">Fingerprint</td><td id="me-ca" class="text-sm" style="word-break:break-all">—</td></tr>
+    </table>
+    <span class="form-hint" style="display:block;margin:8px 0 12px">
+      Compare this fingerprint with the one your device shows before trusting it.
+    </span>
+    <a class="btn btn-secondary" href="/freedomnas-ca.crt" download>Download the certificate authority</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/account.js"></script>
+{% endblock %}

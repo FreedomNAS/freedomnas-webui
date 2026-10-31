@@ -163,7 +163,7 @@ def _basic_credentials(request: Request) -> tuple:
 
 # Samba keeps passwords of its own, and an account that existed before
 # FreedomNAS (an install onto a running system, a restored one) has none
-# there: no password opens a share for it. An administrator who signs in here
+# there: no password opens a share for it. An account that signs in here
 # gives it, once per account and process, the password PAM just accepted.
 _samba_checked: set = set()
 _samba_lock = threading.Lock()
@@ -188,6 +188,18 @@ def _samba_account(username: str, password: str) -> None:
         logger.info("%s had no Samba password: given the one used to sign in", username)
     except (CommandExecutionError, CommandTranslationError) as exc:
         logger.warning("Could not check the Samba password of %s: %s", username, exc)
+
+
+def authenticate_account(request: Request) -> str:
+    """
+    Verify credentials via PAM, for what every account may see and do for
+    itself: 401 when they are missing or wrong.
+    """
+    username, password = _basic_credentials(request)
+    if not verify_credentials(username, password):
+        raise _unauthorized("Invalid credentials")
+    _samba_account(username, password)
+    return username
 
 
 def authenticate(request: Request) -> str:

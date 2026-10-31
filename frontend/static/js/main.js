@@ -44,6 +44,7 @@ async function api(method, path, body = null) {
   }
 
   if (res.status === 403) {
+    if (location.pathname !== '/account/') location.href = '/account/';
     throw new Error('This account is not an administrator');
   }
 
@@ -269,6 +270,7 @@ const DOCS_PAGES = {
   '/services/':  'user-guide/services/',
   '/system/':    'user-guide/system/',
   '/setup/':     'getting-started/first-run/',
+  '/account/':   'user-guide/account/',
 };
 
 function setHelpLink() {
@@ -413,7 +415,7 @@ async function rebootSystem() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-function initShared() {
+function initShared({ limited = false } = {}) {
   if (!Auth.isLoggedIn()) {
     Auth.clear();
     const next = encodeURIComponent(location.pathname);
@@ -427,9 +429,11 @@ function initShared() {
   markActiveNav();
   setHelpLink();
   loadUserBadge();
-  loadEditionBadge();
+  if (!limited) {
+    loadEditionBadge();
+    Notices.refresh();
+  }
   updateThemeIcon();
-  Notices.refresh();
 
   document.getElementById('btn-theme')?.addEventListener('click', () => Theme.toggle());
   document.getElementById('btn-sidebar-toggle')?.addEventListener('click', () => Sidebar.toggle());

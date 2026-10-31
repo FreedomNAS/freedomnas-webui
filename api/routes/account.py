@@ -1,6 +1,10 @@
 """
 /api/account/* — what any account may do for itself, administrator or not.
 
+GET  /me       — the signed-in account: its groups, whether it administers
+                 the NAS, the shares it may use, the web pages of the NAS
+                 (modules' links()) and the certificate authority's
+                 fingerprint, for the account page.
 POST /password — {username, password, new_password}: change one's own
                  password, for the system and Samba at once. The current
                  password may be a temporary one that has expired (given
@@ -8,15 +12,85 @@ POST /password — {username, password, new_password}: change one's own
                  limited as everywhere else.
 """
 
-from fastapi import APIRouter
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from freedomnas import tls
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from api.deps import check_password, get_config, get_engine
+from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
+from api.deps import authenticate_account, check_password, get_config, get_engine, is_administrator
 from api.routes.users import password_problem, set_own_password
 
+logger = logging.getLogger("freedomnas.webui.account")
+
 router = APIRouter()
+
+
+def _groups(engine, username: str) -> list:
+    try:
+        groups, _ = engine.execute("users", "list_groups", username=username)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        logger.warning("Cannot read the groups of %s: %s", username, exc)
+        return []
+    return groups.split()
+
+
+def _smb_shares(config, username: str, groups: list) -> list:
+    found = []
+    for share in config.get_smb_shares():
+        if (share.get("owner") == username or username in (share.get("valid_users") or [])
+                or (share.get("group") and share["group"] in groups)):
+            found.append({"name": share["name"], "path": share.get("path", ""),
+                          "comment": share.get("comment", ""), "read_only": bool(share.get("read_only"))})
+    return found
+
+
+def _nfs_shares(config, username: str) -> list:
+    return [{"name": s["name"], "path": s.get("path", "")}
+            for s in config.get_nfs_shares() if s.get("owner") == username]
+
+
+def _links() -> list:
+    joined = {}
+    try:
+        modules = ModuleLoader(get_engine(), get_config()).instances()
+    except ModuleLoaderException as exc:
+        logger.warning("Cannot load the modules: %s", exc)
+        return []
+    for manifest, module in modules:
+        try:
+            module.start()
+            entries = module.links()
+        except Exception as exc:
+            logger.warning("Module %s gave no links: %s", manifest.get("id", module.name), exc)
+            continue
+        for link in entries:
+            name = str(link.get("name") or "")
+            if name:
+                joined.setdefault(name, {}).update({k: v for k, v in link.items()
+                                                    if k not in joined.get(name, {})})
+    return sorted((link for link in joined.values() if link.get("url") or link.get("port")),
+                  key=lambda link: str(link.get("title") or link["name"]).lower())
+
+
+@router.get("/me")
+async def me(username: str = Depends(authenticate_account)):
+    engine, config = get_engine(), get_config()
+    groups = _groups(engine, username)
+    return {
+        "username": username,
+        "admin": is_administrator(username),
+        "groups": groups,
+        "hostname": config.get_hostname(),
+        "edition": config.get_edition(),
+        "shares": {"smb": _smb_shares(config, username, groups), "nfs": _nfs_shares(config, username)},
+        "links": await asyncio.to_thread(_links),
+        "ca_fingerprint": tls.ca_fingerprint() if tls.ca_file().exists() else None,
+    }
 
 
 @router.post("/password")

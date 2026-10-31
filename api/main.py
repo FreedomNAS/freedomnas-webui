@@ -236,6 +236,11 @@ async def page_password(request: Request):
     return templates.TemplateResponse(request, "password.html")
 
 
+@app.get("/account/")
+async def page_account(request: Request):
+    return templates.TemplateResponse(request, "account.html")
+
+
 @app.get("/setup/")
 async def page_setup(request: Request):
     return templates.TemplateResponse(request, "setup.html")

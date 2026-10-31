@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-PAGES = ["/auth/", "/setup/", "/dashboard/", "/storage/", "/shares/", "/network/",
+PAGES = ["/auth/", "/account/", "/setup/", "/dashboard/", "/storage/", "/shares/", "/network/",
          "/users/", "/updates/", "/services/", "/plugins/", "/system/"]
 
 

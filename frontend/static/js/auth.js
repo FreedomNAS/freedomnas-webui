@@ -41,8 +41,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (res.status === 403) {
-        showError('This account is not an administrator.');
-        pass.value = '';
+        res = await fetch('/api/account/me', { headers });
+        if (res.ok) {
+          sessionStorage.setItem('fnas_auth', btoa(`${u}:${p}`));
+          sessionStorage.setItem('fnas_user', u);
+          location.href = '/account/';
+          return;
+        }
+        showError(`Unexpected response (${res.status}). Try again.`);
         return;
       }
 
