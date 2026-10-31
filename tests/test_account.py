@@ -1,4 +1,4 @@
-"""/api/account/password — any account changes its own password."""
+"""/api/account/* — what every account sees and does for itself, administrator or not."""
 
 import pytest
 
