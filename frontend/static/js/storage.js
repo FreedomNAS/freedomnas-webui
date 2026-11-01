@@ -259,11 +259,31 @@ let _snapFilter = '';
 let _snapPolicies = [];
 
 const SNAP_INTERVALS = [
-  ['hourly', 'Hourly'],
-  ['daily', 'Daily'],
-  ['weekly', 'Weekly'],
-  ['monthly', 'Monthly'],
+  { key: 'hourly',  every: 'Every hour',  unit: 'hour',  keeps: [6, 12, 24, 48, 168], proposed: 24 },
+  { key: 'daily',   every: 'Every day',   unit: 'day',   keeps: [3, 7, 14, 31],       proposed: 7 },
+  { key: 'weekly',  every: 'Every week',  unit: 'week',  keeps: [2, 4, 8, 13],        proposed: 4 },
+  { key: 'monthly', every: 'Every month', unit: 'month', keeps: [3, 6, 12, 24],       proposed: 12 },
 ];
+
+function plural(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
+
+function keptFor(unit, n) {
+  if (unit === 'hour' && n === 168) return '1 week';
+  if (unit === 'hour' && n % 24 === 0) return plural(n / 24, 'day');
+  if (unit === 'day' && n === 31) return '1 month';
+  if (unit === 'day' && n % 7 === 0) return plural(n / 7, 'week');
+  if (unit === 'week' && n === 4) return '1 month';
+  if (unit === 'week' && n === 8) return '2 months';
+  if (unit === 'week' && n === 13) return '3 months';
+  if (unit === 'month' && n % 12 === 0) return plural(n / 12, 'year');
+  return plural(n, unit);
+}
+
+function scheduleSummary(p) {
+  const parts = SNAP_INTERVALS.filter(i => p[i.key] > 0)
+    .map(i => `${i.every.toLowerCase()}, kept ${keptFor(i.unit, p[i.key])}`);
+  return parts.length ? parts.join(' · ') : 'nothing';
+}
 
 function renderSchedules() {
   return `
@@ -273,52 +293,83 @@ function renderSchedules() {
     </div>
     ${_snapPolicies.length ? `
     <div class="table-wrap"><table>
-      <thead><tr><th>Dataset</th>${SNAP_INTERVALS.map(([, label]) => `<th>${label}</th>`).join('')}<th></th></tr></thead>
+      <thead><tr><th>Dataset</th><th>Snapshots</th><th>Datasets inside</th><th></th></tr></thead>
       <tbody>${_snapPolicies.map(p => `
         <tr>
           <td class="mono">${esc(p.dataset)}</td>
-          ${SNAP_INTERVALS.map(([key]) => `<td>${p[key] ? `keep ${p[key]}` : '<span class="text-muted">off</span>'}</td>`).join('')}
+          <td>${esc(scheduleSummary(p))}</td>
+          <td>${p.recursive ? 'Included' : '<span class="text-muted">Not included</span>'}</td>
           <td>
             <button class="btn btn-ghost btn-sm" data-schedule-edit="${esc(p.dataset)}">Edit</button>
             <button class="btn btn-ghost btn-sm" data-schedule-remove="${esc(p.dataset)}">Remove</button>
           </td>
         </tr>`).join('')}</tbody>
-    </table></div>` : '<p class="text-muted">No schedules. A schedule takes snapshots of one dataset every hour, day, week or month and keeps the newest of each.</p>'}
+    </table></div>` : '<p class="text-muted">No schedules yet. A schedule takes snapshots automatically — a copy of how your files were at that moment — and deletes the old ones by itself.</p>'}
     <div class="section-header mt-6"><span class="section-title">Snapshots</span></div>`;
+}
+
+function underRecursive(name) {
+  return _snapPolicies.some(p => p.recursive && name.startsWith(p.dataset + '/'));
 }
 
 async function openSchedule(dataset) {
   let names;
   try {
+    const assisted = uiLevel() === 'assisted';
     names = ((await apiJSON('GET', '/api/storage/datasets')).datasets || [])
-      .filter(r => r.type !== 'volume' && !r.name.split('/').includes('.freedomnas')).map(r => r.name);
+      .filter(r => r.type !== 'volume' && !r.name.split('/').includes('.freedomnas') && !(assisted && r.system))
+      .map(r => r.name);
   } catch (e) { toast(e.message, 'err'); return; }
   const current = _snapPolicies.find(p => p.dataset === dataset);
   const scheduled = new Set(_snapPolicies.map(p => p.dataset));
-  const choices = dataset ? [dataset] : names.filter(n => !scheduled.has(n));
-  if (!choices.length) { toast('Every dataset already has a schedule.', 'err'); return; }
-  const defaults = { hourly: 24, daily: 7, weekly: 4, monthly: 12 };
+  const choices = dataset ? [dataset] : names.filter(n => !scheduled.has(n) && !underRecursive(n));
+  if (!choices.length) {
+    toast(names.length ? 'Every dataset already has a schedule.' : 'No data pool to schedule: create or import one first.', 'err');
+    return;
+  }
+  const recursive = current ? current.recursive === true : true;
   datasetDialog(dataset ? `Schedule — ${dataset}` : 'Add Schedule', 'Save', `
     <div class="form-group">
       <label class="form-label" for="sched-dataset">Dataset</label>
       <select class="select mono" id="sched-dataset"${dataset ? ' disabled' : ''}>
         ${choices.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
       </select>
-      <span class="form-hint">Only this dataset: a child dataset needs a schedule of its own.</span>
     </div>
-    ${SNAP_INTERVALS.map(([key, label]) => `
+    <div class="form-group advanced-only">
+      <label class="form-label"><input type="checkbox" id="sched-recursive"${recursive ? ' checked' : ''}>
+        Include the datasets inside it</label>
+      <span class="form-hint">Without it only this dataset is snapshotted, and each dataset inside can get a schedule of its own.</span>
+    </div>
     <div class="form-group">
-      <label class="form-label" for="sched-${key}">${label} snapshots to keep</label>
-      <input class="input" id="sched-${key}" type="number" min="0" step="1"
-             value="${current ? current[key] || 0 : defaults[key]}">
-    </div>`).join('')}
-    <span class="form-hint">0 takes none of that kind. Only the snapshots a schedule took are ever deleted; those taken by hand stay.</span>`,
+      <label class="form-label">When to take a snapshot, and how long to keep it</label>
+      <div class="device-list">
+        ${SNAP_INTERVALS.map(i => {
+          const value = current ? current[i.key] || 0 : i.proposed;
+          const keeps = value && !i.keeps.includes(value) ? [...i.keeps, value].sort((a, b) => a - b) : i.keeps;
+          return `<label class="device-row">
+            <input type="checkbox" id="sched-on-${i.key}"${value ? ' checked' : ''}>
+            <span style="min-width:7.5rem">${i.every}</span>
+            <span class="text-muted">keep each for</span>
+            <select class="select" id="sched-keep-${i.key}" style="width:auto">
+              ${keeps.map(n => `<option value="${n}"${n === (value || i.proposed) ? ' selected' : ''}>${keptFor(i.unit, n)}</option>`).join('')}
+            </select>
+          </label>`;
+        }).join('')}
+      </div>
+      <span class="form-hint">Older snapshots are deleted by themselves. Only the ones a schedule took: snapshots made by hand always stay.</span>
+    </div>`,
     async () => {
       const name = document.getElementById('sched-dataset').value;
-      const body = {};
-      for (const [key] of SNAP_INTERVALS) {
-        const value = document.getElementById(`sched-${key}`).value.trim();
-        body[key] = value === '' ? 0 : Number(value);
+      const body = {
+        recursive: uiLevel() === 'assisted' ? recursive : document.getElementById('sched-recursive').checked,
+      };
+      for (const i of SNAP_INTERVALS) {
+        body[i.key] = document.getElementById(`sched-on-${i.key}`).checked
+          ? Number(document.getElementById(`sched-keep-${i.key}`).value) : 0;
+      }
+      if (!SNAP_INTERVALS.some(i => body[i.key] > 0)) {
+        toast('Tick at least one: when to take a snapshot.', 'err');
+        return;
       }
       await apiJSON('PUT', `/api/storage/snapshot-policies/${apiPath(name)}`, body);
       toast('Schedule saved.', 'ok');
@@ -368,22 +419,22 @@ function renderSnapshots(el, marks) {
     <div class="section-header">
       <input class="input" id="snap-filter" type="search" placeholder="Filter by dataset or name"
              value="${esc(_snapFilter)}" style="max-width:22rem">
-      <button class="btn btn-danger btn-sm" id="snap-destroy-selected" disabled>Destroy selected</button>
+      <button class="btn btn-danger btn-sm advanced-only" id="snap-destroy-selected" disabled>Destroy selected</button>
     </div>
     ${rows.length ? `
     <div class="table-wrap"><table>
-      <thead><tr><th><input type="checkbox" id="snap-all"></th><th>Snapshot</th><th>Created</th>
-        <th>Used</th><th>Referenced</th><th>Holds</th><th>Clones</th><th></th></tr></thead>
+      <thead><tr><th class="advanced-only"><input type="checkbox" id="snap-all"></th><th>Snapshot</th><th>Created</th>
+        <th>Used</th><th class="advanced-only">Referenced</th><th class="advanced-only">Holds</th><th class="advanced-only">Clones</th><th class="advanced-only"></th></tr></thead>
       <tbody>${rows.map(r => `
         <tr>
-          <td><input type="checkbox" data-snap-pick="${esc(r.name)}"></td>
+          <td class="advanced-only"><input type="checkbox" data-snap-pick="${esc(r.name)}"></td>
           <td class="mono">${esc(r.name)}</td>
           <td class="text-muted">${snapTime(r.creation)}</td>
           <td>${r.used === 0 ? '0 B' : poolSize(r.used)}</td>
-          <td>${poolSize(r.referenced)}</td>
-          <td>${r.holds ? `<span class="badge badge-info">${r.holds}</span>` : ''}</td>
-          <td class="mono text-muted">${esc((r.clones || []).join(', '))}</td>
-          <td><select class="select" data-snap-menu="${esc(r.name)}" style="width:auto">
+          <td class="advanced-only">${poolSize(r.referenced)}</td>
+          <td class="advanced-only">${r.holds ? `<span class="badge badge-info">${r.holds}</span>` : ''}</td>
+          <td class="mono text-muted advanced-only">${esc((r.clones || []).join(', '))}</td>
+          <td class="advanced-only"><select class="select" data-snap-menu="${esc(r.name)}" style="width:auto">
             <option value="">Actions…</option>
             <option value="rollback">Roll back…</option>
             <option value="clone">Clone…</option>

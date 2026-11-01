@@ -46,8 +46,18 @@ def test_datasets_are_parsed_and_short_lines_skipped(client, engine):
     assert [d["name"] for d in r.body["datasets"]] == ["tank", "tank/home"]
     assert r.body["datasets"][1] == {
         "name": "tank/home", "used": "500M", "avail": "3T", "refer": "500M",
-        "mountpoint": "/tank/home", "protected": None,
+        "mountpoint": "/tank/home", "protected": None, "system": False,
     }
+
+
+def test_datasets_of_the_system_pool_are_marked(client, engine):
+    engine.outputs[("zfs", "dataset_at_path")] = "rpool/ROOT/debian\n"
+    engine.outputs[("zfs", "dataset_list")] = (
+        "rpool/home\t1G\t3T\t96K\t/home\n"
+        "tank\t1G\t3T\t96K\t/tank\n"
+    )
+    r = client.get("/api/storage/datasets")
+    assert [d["system"] for d in r.body["datasets"]] == [True, False]
 
 
 def test_snapshots_are_listed(client, engine):
@@ -111,6 +121,41 @@ def test_a_policy_that_keeps_nothing_is_refused(client):
     r = client.put("/api/storage/snapshot-policies/tank", {"hourly": 0})
     assert r.status == 422
     assert "remove the policy" in r.body["detail"]
+
+
+def test_a_recursive_policy_is_stored(client, config):
+    r = client.put("/api/storage/snapshot-policies/tank", {"daily": 7, "recursive": True})
+    assert r.status == 200 and r.body["recursive"] is True
+    assert config.get_snapshot_policies()[0]["recursive"] is True
+
+
+def test_a_policy_is_not_recursive_unless_asked(client, config):
+    client.put("/api/storage/snapshot-policies/tank", {"daily": 7})
+    assert config.get_snapshot_policies()[0]["recursive"] is False
+
+
+def test_recursive_must_be_a_boolean(client):
+    r = client.put("/api/storage/snapshot-policies/tank", {"daily": 7, "recursive": "yes"})
+    assert r.status == 422
+
+
+def test_a_dataset_inside_a_recursive_policy_is_refused(client):
+    client.put("/api/storage/snapshot-policies/tank", {"daily": 7, "recursive": True})
+    r = client.put("/api/storage/snapshot-policies/tank/home", {"daily": 7})
+    assert r.status == 422 and "tank" in r.body["detail"]
+
+
+def test_a_recursive_policy_over_a_scheduled_dataset_is_refused(client):
+    client.put("/api/storage/snapshot-policies/tank/home", {"daily": 7})
+    r = client.put("/api/storage/snapshot-policies/tank", {"daily": 7, "recursive": True})
+    assert r.status == 422 and "tank/home" in r.body["detail"]
+
+
+def test_a_non_recursive_parent_leaves_room_for_its_children(client, config):
+    client.put("/api/storage/snapshot-policies/tank", {"daily": 7})
+    assert client.put("/api/storage/snapshot-policies/tank/home", {"daily": 7}).status == 200
+    assert client.put("/api/storage/snapshot-policies/tank", {"weekly": 4}).status == 200
+    assert len(config.get_snapshot_policies()) == 2
 
 
 def test_removing_a_policy_that_does_not_exist_is_404(client):

@@ -169,6 +169,7 @@ async def list_datasets(username: str = Depends(authenticate)):
                 "refer": _bytes(parts[3]),
                 "mountpoint": parts[4],
                 "protected": zfs_datasets.subtree_reason(rows, parts[0], system_pool),
+                "system": bool(system_pool) and parts[0].split("/", 1)[0] == system_pool,
             }
             if len(parts) >= 8:
                 entry["type"] = parts[5]
@@ -291,9 +292,13 @@ async def rename_dataset(dataset: str, body: dict, username: str = Depends(authe
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     for policy in _policies_of(config, dataset):
-        keep = {k: v for k, v in policy.items() if k != "dataset"}
+        keep = {k: policy.get(k, 0) for k in config.SNAPSHOT_INTERVALS}
         config.remove_snapshot_policy(policy["dataset"])
-        config.set_snapshot_policy(new_name + policy["dataset"][len(dataset):], keep)
+        try:
+            config.set_snapshot_policy(new_name + policy["dataset"][len(dataset):], keep,
+                                       bool(policy.get("recursive")))
+        except ConfigurationException as exc:
+            logger.info("Schedule of %s dropped after the rename: %s", policy["dataset"], exc)
     shares = await asyncio.to_thread(
         _follow_shares, engine, config, change["old"], change["new"], bool(body.get("update_shares")))
     return {"dataset": new_name, **change, "shares": shares}
@@ -396,6 +401,10 @@ async def set_snapshot_policy(
                 content={"detail": f"{interval} must be a whole number, got {value!r}"},
             )
 
+    recursive = body.get("recursive", False)
+    if not isinstance(recursive, bool):
+        return JSONResponse(status_code=422, content={"detail": "recursive must be true or false"})
+
     if not any(keep.values()):
         return JSONResponse(
             status_code=422,
@@ -404,10 +413,10 @@ async def set_snapshot_policy(
         )
 
     try:
-        config.set_snapshot_policy(dataset, keep)
+        config.set_snapshot_policy(dataset, keep, recursive)
     except ConfigurationException as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
-    return {"dataset": dataset, **keep}
+    return {"dataset": dataset, **keep, "recursive": recursive}
 
 
 @router.delete("/snapshot-policies/{dataset:path}")
