@@ -256,13 +256,96 @@ function propertyRow(name, spec, cur, resetFor = '') {
 
 let _snapRows = [];
 let _snapFilter = '';
+let _snapPolicies = [];
+
+const SNAP_INTERVALS = [
+  ['hourly', 'Hourly'],
+  ['daily', 'Daily'],
+  ['weekly', 'Weekly'],
+  ['monthly', 'Monthly'],
+];
+
+function renderSchedules() {
+  return `
+    <div class="section-header">
+      <span class="section-title">Schedules</span>
+      <button class="btn btn-primary btn-sm" id="btn-add-schedule">Add Schedule</button>
+    </div>
+    ${_snapPolicies.length ? `
+    <div class="table-wrap"><table>
+      <thead><tr><th>Dataset</th>${SNAP_INTERVALS.map(([, label]) => `<th>${label}</th>`).join('')}<th></th></tr></thead>
+      <tbody>${_snapPolicies.map(p => `
+        <tr>
+          <td class="mono">${esc(p.dataset)}</td>
+          ${SNAP_INTERVALS.map(([key]) => `<td>${p[key] ? `keep ${p[key]}` : '<span class="text-muted">off</span>'}</td>`).join('')}
+          <td>
+            <button class="btn btn-ghost btn-sm" data-schedule-edit="${esc(p.dataset)}">Edit</button>
+            <button class="btn btn-ghost btn-sm" data-schedule-remove="${esc(p.dataset)}">Remove</button>
+          </td>
+        </tr>`).join('')}</tbody>
+    </table></div>` : '<p class="text-muted">No schedules. A schedule takes snapshots of one dataset every hour, day, week or month and keeps the newest of each.</p>'}
+    <div class="section-header mt-6"><span class="section-title">Snapshots</span></div>`;
+}
+
+async function openSchedule(dataset) {
+  let names;
+  try {
+    names = ((await apiJSON('GET', '/api/storage/datasets')).datasets || [])
+      .filter(r => r.type !== 'volume' && !r.name.split('/').includes('.freedomnas')).map(r => r.name);
+  } catch (e) { toast(e.message, 'err'); return; }
+  const current = _snapPolicies.find(p => p.dataset === dataset);
+  const scheduled = new Set(_snapPolicies.map(p => p.dataset));
+  const choices = dataset ? [dataset] : names.filter(n => !scheduled.has(n));
+  if (!choices.length) { toast('Every dataset already has a schedule.', 'err'); return; }
+  const defaults = { hourly: 24, daily: 7, weekly: 4, monthly: 12 };
+  datasetDialog(dataset ? `Schedule — ${dataset}` : 'Add Schedule', 'Save', `
+    <div class="form-group">
+      <label class="form-label" for="sched-dataset">Dataset</label>
+      <select class="select mono" id="sched-dataset"${dataset ? ' disabled' : ''}>
+        ${choices.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+      </select>
+      <span class="form-hint">Only this dataset: a child dataset needs a schedule of its own.</span>
+    </div>
+    ${SNAP_INTERVALS.map(([key, label]) => `
+    <div class="form-group">
+      <label class="form-label" for="sched-${key}">${label} snapshots to keep</label>
+      <input class="input" id="sched-${key}" type="number" min="0" step="1"
+             value="${current ? current[key] || 0 : defaults[key]}">
+    </div>`).join('')}
+    <span class="form-hint">0 takes none of that kind. Only the snapshots a schedule took are ever deleted; those taken by hand stay.</span>`,
+    async () => {
+      const name = document.getElementById('sched-dataset').value;
+      const body = {};
+      for (const [key] of SNAP_INTERVALS) {
+        const value = document.getElementById(`sched-${key}`).value.trim();
+        body[key] = value === '' ? 0 : Number(value);
+      }
+      await apiJSON('PUT', `/api/storage/snapshot-policies/${apiPath(name)}`, body);
+      toast('Schedule saved.', 'ok');
+      closeModal('modal-dataset');
+      loadSnapshots();
+    });
+}
+
+async function removeSchedule(dataset) {
+  if (!await confirm('Remove schedule', `Stop taking scheduled snapshots of <span class="mono">${esc(dataset)}</span>? The snapshots already taken stay.`, 'Remove')) return;
+  try {
+    await apiJSON('DELETE', `/api/storage/snapshot-policies/${apiPath(dataset)}`);
+    toast('Schedule removed.', 'ok');
+    loadSnapshots();
+  } catch (e) { toast(e.message, 'err'); }
+}
 
 async function loadSnapshots() {
   const el = document.getElementById('panel-snapshots');
   el.innerHTML = '<div class="page-loading"><div class="spinner"></div></div>';
   try {
-    const d = await apiJSON('GET', '/api/storage/snapshots');
+    const [d, p] = await Promise.all([
+      apiJSON('GET', '/api/storage/snapshots'),
+      apiJSON('GET', '/api/storage/snapshot-policies'),
+    ]);
     _snapRows = d.snapshots || [];
+    _snapPolicies = p.policies || [];
     let marks = [];
     if (uiLevel() === 'expert') {
       try { marks = (await apiJSON('GET', '/api/storage/bookmarks')).bookmarks; } catch { marks = []; }
@@ -281,7 +364,7 @@ function renderSnapshots(el, marks) {
   const q = _snapFilter.toLowerCase();
   const rows = _snapRows.filter(r => !q || r.name.toLowerCase().includes(q));
   const expert = uiLevel() === 'expert';
-  el.innerHTML = `
+  el.innerHTML = renderSchedules() + `
     <div class="section-header">
       <input class="input" id="snap-filter" type="search" placeholder="Filter by dataset or name"
              value="${esc(_snapFilter)}" style="max-width:22rem">
@@ -320,6 +403,11 @@ function renderSnapshots(el, marks) {
         <td><button class="btn btn-ghost btn-sm" data-bookmark-del="${esc(m.name)}">Delete</button></td></tr>`).join('')}</tbody>
     </table></div>` : '<p class="text-muted">No bookmarks. A bookmark keeps the point of a snapshot after it is destroyed, as the base of an incremental send.</p>'}` : ''}`;
 
+  el.querySelector('#btn-add-schedule').addEventListener('click', () => openSchedule(''));
+  el.querySelectorAll('[data-schedule-edit]').forEach(b =>
+    b.addEventListener('click', () => openSchedule(b.dataset.scheduleEdit)));
+  el.querySelectorAll('[data-schedule-remove]').forEach(b =>
+    b.addEventListener('click', () => removeSchedule(b.dataset.scheduleRemove)));
   const filter = el.querySelector('#snap-filter');
   filter.addEventListener('input', () => {
     _snapFilter = filter.value;
