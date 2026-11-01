@@ -304,7 +304,6 @@ def _finish_restore(engine, config, body: dict, request: Request, username: str)
             return JSONResponse(status_code=422, content={"detail": f"{name}: {problem}"})
 
     try:
-        sudo_group = engine.get_profile_value("users", "sudo_group")
         _set_ssh(engine, config, body.get("ssh", False))
         # The configuration may come from another edition's install.
         config.set("system.edition", engine.os_type)
