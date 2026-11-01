@@ -31,12 +31,13 @@ import json
 import os
 import shlex
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
-from freedomnas import bootstate
+from freedomnas import bootenv, bootstate
 from api import restart
 from api.deps import get_config, get_engine, is_administrator, verify_credentials
 from api.routes import plugins
@@ -128,6 +129,102 @@ async def _authenticate_socket(websocket: WebSocket):
     return username
 
 
+async def _run_streamed(websocket: WebSocket, args) -> Optional[int]:
+    """Run one command (spec §7.7: never shell=True), its output streamed line by line."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as exc:
+        await _send(websocket, "stderr", f"Failed to start process: {exc}")
+        return None
+
+    async def stream_pipe(pipe, stream_name: str):
+        """
+        Drain the pipe even after the client is gone: the update keeps running
+        either way, and a full pipe would block the package manager halfway
+        through a transaction.
+        """
+        connected = True
+        async for raw in pipe:
+            if not connected:
+                continue
+            line = raw.decode(errors="replace").rstrip()
+            connected = await _send(websocket, stream_name, line)
+
+    await asyncio.gather(
+        stream_pipe(proc.stdout, "stdout"),
+        stream_pipe(proc.stderr, "stderr"),
+    )
+    return await proc.wait()
+
+
+async def _update_live(websocket: WebSocket, engine, command: str, snap_name: str) -> Optional[int]:
+    """topgrade on the running system, the boot image (or system) kept first where the edition can."""
+    if snap_name:
+        try:
+            kept = await asyncio.to_thread(bootenv.create_before_update, engine, snap_name[len("pre-update-"):])
+            if kept:
+                await _send(websocket, "stdout", f"Boot environment created: {kept} (the system as it is now)")
+        except (CommandExecutionError, CommandTranslationError) as exc:
+            await _send(websocket, "stderr", f"Warning: the boot environment was not created: {exc}")
+
+    try:
+        stdout, _ = engine.execute("bootloader", "uki_backup", snapshot=snap_name)
+        for line in stdout.splitlines():
+            await _send(websocket, "stdout", line)
+    except CommandTranslationError:
+        pass
+    except CommandExecutionError as exc:
+        await _send(websocket, "stderr", f"Warning: the boot image was not backed up: {exc}")
+
+    return await _run_streamed(websocket, shlex.split(command))
+
+
+_COPY_RESULTS = {
+    "trial": "The update is ready in {be}. Restart to use it: if the updated system does not finish "
+             "starting, the start after it goes back to the system as it is now, by itself.",
+    "default": "The update is ready in {be}, which starts from the next restart. The system as it is "
+               "now stays under System > Previous systems.",
+    "unchanged": "Nothing to update: the system is up to date.",
+    "failed": "The update did not complete: its copy was dropped, and the running system was never touched.",
+}
+
+
+async def _update_in_copy(websocket: WebSocket, engine, config, stamp: str) -> Optional[int]:
+    """
+    The update goes into a new boot environment while the running system
+    stays as it is (bootenv.py); the copy starts on trial at the next restart.
+    """
+    await _send(websocket, "stdout", "Making a copy of the system to install the update into...")
+    try:
+        update = await asyncio.to_thread(bootenv.begin_update, engine, stamp)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        await _send(websocket, "stderr", f"Could not prepare the copy: {exc}")
+        return 1
+    await _send(websocket, "stdout", f"Copy {update['be']} ready at {update['root']}: the running system is not touched")
+
+    succeeded = True
+    for command in bootenv.update_commands(engine, update["root"]):
+        code = await _run_streamed(websocket, shlex.split(command))
+        if code != 0:
+            await _send(websocket, "stderr", f"This step ended with exit code {code}")
+            succeeded = False
+            break
+
+    try:
+        outcome = await asyncio.to_thread(bootenv.finish_update, engine, config, update, succeeded)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        await _send(websocket, "stderr", f"Could not finish the copy {update['be']}: {exc}")
+        return 1
+    stream = "stderr" if outcome["result"] == "failed" else "stdout"
+    await _send(websocket, stream, _COPY_RESULTS[outcome["result"]].format(be=outcome["be"]))
+    return 0 if succeeded else 1
+
+
 @router.websocket("/ws/updates/terminal")
 async def updates_terminal(websocket: WebSocket):
     await websocket.accept()
@@ -173,9 +270,10 @@ async def updates_terminal(websocket: WebSocket):
         await _send(websocket, "stderr", f"Warning: could not write topgrade.toml: {exc}")
 
     # Pre-update snapshot (spec §7.7)
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     snap_name = ""
     if config.get("updates.topgrade.auto_snapshot", True):
-        snap_name = f"pre-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        snap_name = f"pre-update-{stamp}"
         for pool in _pools_to_snapshot(engine, config):
             try:
                 engine.execute("zfs", "snapshot_create_recursive", dataset=pool, snap_name=snap_name)
@@ -183,52 +281,18 @@ async def updates_terminal(websocket: WebSocket):
             except (CommandExecutionError, CommandTranslationError) as exc:
                 await _send(websocket, "stderr", f"Warning: snapshot of {pool} failed: {exc}")
 
-    try:
-        stdout, _ = engine.execute("bootloader", "uki_backup", snapshot=snap_name)
-        for line in stdout.splitlines():
-            await _send(websocket, "stdout", line)
-    except CommandTranslationError:
-        pass
-    except CommandExecutionError as exc:
-        await _send(websocket, "stderr", f"Warning: the boot image was not backed up: {exc}")
-
-    # Launch topgrade via asyncio (spec §7.7 — no shell=True, no subprocess.run)
-    args = shlex.split(command)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except Exception as exc:
-        await _send(websocket, "stderr", f"Failed to start process: {exc}")
-        await _close(websocket, 1011)
-        return
-
-    async def stream_pipe(pipe, stream_name: str):
-        """
-        Drain the pipe even after the client is gone: the update keeps running
-        either way, and a full pipe would block topgrade halfway through a
-        package manager transaction.
-        """
-        connected = True
-        async for raw in pipe:
-            if not connected:
-                continue
-            line = raw.decode(errors="replace").rstrip()
-            connected = await _send(websocket, stream_name, line)
-
     global running
     running += 1
     try:
-        await asyncio.gather(
-            stream_pipe(proc.stdout, "stdout"),
-            stream_pipe(proc.stderr, "stderr"),
-        )
-        exit_code = await proc.wait()
+        if await asyncio.to_thread(bootenv.updates_inside, engine):
+            exit_code = await _update_in_copy(websocket, engine, config, stamp)
+        else:
+            exit_code = await _update_live(websocket, engine, command, snap_name)
     finally:
         running -= 1
+    if exit_code is None:
+        await _close(websocket, 1011)
+        return
 
     notices = {
         "restart_needed": await asyncio.to_thread(restart.restart_needed),

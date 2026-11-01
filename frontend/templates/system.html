@@ -102,18 +102,31 @@
   </div>
 </div>
 
+<!-- Boot environments (Advanced, FreeBSD) -->
+<div class="section advanced-only" id="bootenv-section" hidden>
+  <div class="section-header"><span class="section-title">Previous systems</span></div>
+  <p class="text-muted" style="max-width:720px">
+    Every update is installed into a new whole copy of the system (a boot environment), and the
+    system it was made from stays here as it was. If something goes wrong after an update, start the
+    copy from before it: the system is back as it was, and your data pools are not touched. The five
+    newest copies made by updates are kept; the others are deleted by themselves.
+  </p>
+  <div id="bootenv-list"></div>
+</div>
+
 <!-- Automatic rollback (Expert) -->
 <div class="section expert-only" id="autorollback-section" hidden>
   <div class="section-header"><span class="section-title">Automatic rollback</span></div>
   <div class="card" style="max-width:480px">
     <label class="checkbox-group">
       <input id="f-autorollback" type="checkbox">
-      <span>Roll back a kernel update that does not boot</span>
+      <span>Roll back an update that does not boot</span>
     </label>
     <span class="form-hint" style="display:block;margin-top:8px">
-      After a kernel update, if the new kernel ends in the emergency shell or does not
-      finish booting three times, the previous kernel comes back by itself and the system
-      files return to the snapshot taken before the update. Your data pools are never touched.
+      If the system does not finish starting after an update, the system from before it comes
+      back by itself: on Linux after a kernel that ends in the emergency shell or fails three times,
+      on FreeBSD after an updated copy whose first start does not get to the end. Your data pools
+      are never touched.
     </span>
     <span class="form-hint" id="autorollback-state" style="display:block;margin-top:8px"></span>
   </div>

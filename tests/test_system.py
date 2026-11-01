@@ -363,3 +363,28 @@ def test_no_ca_yet_is_a_404(anonymous, tmp_path, monkeypatch):
     from freedomnas import paths
     monkeypatch.setattr(paths, "tls_dir", lambda engine=None: tmp_path / "none")
     assert anonymous.get("/freedomnas-ca.crt").status == 404
+
+
+# ---------------------------------------------------------------------------
+# Boot environments
+# ---------------------------------------------------------------------------
+
+def test_an_edition_without_boot_environments_says_so(client):
+    assert client.get("/api/system/boot-environments").body == {"supported": False, "environments": []}
+
+
+def test_boot_environments_are_listed_and_refusals_are_422(client, monkeypatch):
+    from freedomnas import bootenv
+    envs = [{"name": "freebsd", "running": True, "next_boot": True, "once": False,
+             "space": "1G", "created": "2026-10-10 15:51", "ours": False}]
+    monkeypatch.setattr(bootenv, "supported", lambda engine: True)
+    monkeypatch.setattr(bootenv, "list_all", lambda engine: envs)
+
+    def refuse(engine, name):
+        raise bootenv.BootEnvProblem(f"{name} is the system running now")
+
+    monkeypatch.setattr(bootenv, "destroy", refuse)
+    r = client.get("/api/system/boot-environments")
+    assert r.body == {"supported": True, "environments": envs}
+    r = client.delete("/api/system/boot-environments/freebsd")
+    assert r.status == 422 and "running now" in r.body["detail"]

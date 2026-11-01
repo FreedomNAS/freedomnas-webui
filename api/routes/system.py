@@ -13,6 +13,10 @@ GET  /boot     — automatic rollback: setting, boot state, last rollback
 POST /boot/autorollback — turn the automatic rollback on or off
 POST /boot/forget       — clear the record of a rollback, optionally
                           destroying the failed root dataset it kept
+GET  /boot-environments — the copies of the system the boot loader can
+                 start (FreeBSD), which runs, which boots next
+POST /boot-environments/{name}/activate — boot that one from the next start
+DELETE /boot-environments/{name} — destroy one that neither runs nor boots next
 GET  /webui    — whether the WebUI must restart to use updated files, and
                  the work a restart would cut off
 POST /webui/restart — restart the WebUI; refused while an update or a module
@@ -40,7 +44,7 @@ from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
 from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
-from freedomnas import bootstate, replication, shadow, tls
+from freedomnas import bootenv, bootstate, replication, shadow, tls
 from api import restart
 from api.deps import authenticate, get_config, get_engine
 from api.routes import plugins
@@ -213,7 +217,7 @@ async def set_autorollback(body: dict, username: str = Depends(authenticate)):
         return JSONResponse(status_code=422, content={"detail": "enabled must be true or false"})
     engine = get_engine()
     config = get_config()
-    if bootstate.read_state(engine) is None:
+    if bootstate.read_state(engine) is None and not bootenv.updates_inside(engine):
         return JSONResponse(status_code=409, content={"detail": "This edition does not boot a UKI"})
     try:
         bootstate.set_autorollback(engine, config, body["enabled"])
@@ -228,13 +232,53 @@ async def forget_rollback(body: dict, username: str = Depends(authenticate)):
     if not isinstance(destroy, bool):
         return JSONResponse(status_code=422, content={"detail": "destroy_failed must be true or false"})
     engine = get_engine()
-    if bootstate.read_state(engine) is None:
+    if bootstate.read_state(engine) is None and not bootenv.updates_inside(engine):
         return JSONResponse(status_code=409, content={"detail": "This edition does not boot a UKI"})
     try:
         destroyed = bootstate.forget(engine, destroy)
+    except bootenv.BootEnvProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
     except (CommandExecutionError, CommandTranslationError) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"destroyed": destroyed, **bootstate.summary(engine, get_config())}
+
+
+@router.get("/boot-environments")
+async def boot_environments(username: str = Depends(authenticate)):
+    engine = get_engine()
+    if not bootenv.supported(engine):
+        return {"supported": False, "environments": []}
+    try:
+        environments = await asyncio.to_thread(bootenv.list_all, engine)
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"supported": True, "environments": environments}
+
+
+@router.post("/boot-environments/{name}/activate")
+async def activate_boot_environment(name: str, username: str = Depends(authenticate)):
+    engine = get_engine()
+    try:
+        await asyncio.to_thread(bootenv.activate, engine, name)
+        environments = await asyncio.to_thread(bootenv.list_all, engine)
+    except bootenv.BootEnvProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"supported": True, "environments": environments}
+
+
+@router.delete("/boot-environments/{name}")
+async def destroy_boot_environment(name: str, username: str = Depends(authenticate)):
+    engine = get_engine()
+    try:
+        await asyncio.to_thread(bootenv.destroy, engine, name)
+        environments = await asyncio.to_thread(bootenv.list_all, engine)
+    except bootenv.BootEnvProblem as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except (CommandExecutionError, CommandTranslationError) as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return {"supported": True, "environments": environments}
 
 
 def _busy() -> dict:

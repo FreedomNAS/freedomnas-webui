@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   loadAutorollback();
+  loadBootEnvironments();
 
   document.getElementById('btn-reboot')?.addEventListener('click', rebootSystem);
   document.getElementById('btn-restart-webui')?.addEventListener('click', restartWebUI);
@@ -76,9 +77,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 const BOOT_STATES = {
   ok: 'The running kernel booted normally.',
-  trial: 'A new kernel is on trial: it is confirmed once the system has finished booting.',
+  trial: 'An update is on trial: it is confirmed once the system has finished booting.',
   'fallback-requested': 'A rollback is in progress.',
-  'rolled-back': 'The last kernel update was rolled back.',
+  'rolled-back': 'The last update was rolled back.',
 };
 
 async function loadAutorollback() {
@@ -104,6 +105,55 @@ async function loadAutorollback() {
       box.disabled = false;
     }
   });
+}
+
+function renderBootEnvironments(envs) {
+  const el = document.getElementById('bootenv-list');
+  el.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>System</th><th>Made</th><th>Space</th><th></th><th></th></tr></thead>
+    <tbody>${envs.map(e => `<tr>
+      <td class="mono">${esc(e.name)}</td>
+      <td class="text-muted">${esc(e.created)}</td>
+      <td>${esc(e.space)}</td>
+      <td>${e.running ? '<span class="badge badge-ok">Running now</span>' : ''}
+          ${e.next_boot ? `<span class="badge badge-info">${e.once ? 'Next start only' : 'Starts next'}</span>` : ''}</td>
+      <td>${e.next_boot && !e.once ? '' : `<button class="btn btn-secondary btn-sm" data-be-activate="${esc(e.name)}">Start this one</button>`}
+          ${e.running || e.next_boot ? '' : `<button class="btn btn-ghost btn-sm" data-be-destroy="${esc(e.name)}">Delete</button>`}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+  el.querySelectorAll('[data-be-activate]').forEach(b => b.addEventListener('click', () => activateBootEnvironment(b.dataset.beActivate)));
+  el.querySelectorAll('[data-be-destroy]').forEach(b => b.addEventListener('click', () => destroyBootEnvironment(b.dataset.beDestroy)));
+}
+
+async function loadBootEnvironments() {
+  const section = document.getElementById('bootenv-section');
+  if (!section) return;
+  let d;
+  try { d = await apiJSON('GET', '/api/system/boot-environments'); } catch { return; }
+  if (!d.supported) return;
+  section.hidden = false;
+  renderBootEnvironments(d.environments);
+}
+
+async function activateBootEnvironment(name) {
+  if (!await confirm('Start this system',
+    `From the next start the system boots <span class="mono">${esc(name)}</span>: everything outside the data pools goes back to how it was then. You can switch back here the same way.`,
+    'Start this one')) return;
+  try {
+    const d = await apiJSON('POST', `/api/system/boot-environments/${encodeURIComponent(name)}/activate`);
+    renderBootEnvironments(d.environments);
+    toast(`${name} starts next time.`, 'ok');
+    await rebootSystem();
+  } catch (e) { toast(`Error: ${e.message}`, 'err'); }
+}
+
+async function destroyBootEnvironment(name) {
+  if (!await confirm('Delete this system', `Delete the copy <span class="mono">${esc(name)}</span>? It can no longer be started.`, 'Delete')) return;
+  try {
+    const d = await apiJSON('DELETE', `/api/system/boot-environments/${encodeURIComponent(name)}`);
+    renderBootEnvironments(d.environments);
+    toast(`${name} deleted.`, 'ok');
+  } catch (e) { toast(`Error: ${e.message}`, 'err'); }
 }
 
 async function loadCertificate() {
@@ -141,4 +191,9 @@ function fillTimezones(select, selected) {
   if (!zones.includes('UTC')) zones = ['UTC', ...zones];
   if (selected && !zones.includes(selected)) zones = [selected, ...zones];
   select.replaceChildren(...zones.map(z => new Option(z, z, false, z === selected)));
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }

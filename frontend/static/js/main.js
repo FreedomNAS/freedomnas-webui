@@ -323,7 +323,12 @@ const Notices = {
         'Restart the WebUI to use the new version; the page reloads by itself.',
         'Restart WebUI', () => restartWebUI()));
     }
-    if (boot && boot.reboot_needed) {
+    if (boot && boot.reboot_needed && boot.trial_system) {
+      box.appendChild(this.notice('alert-warn',
+        'An update is ready.',
+        `Reboot to start the updated system (${boot.trial_system}). If it does not finish starting, the start after it goes back to the system running now.`,
+        'Reboot now', () => rebootSystem()));
+    } else if (boot && boot.reboot_needed) {
       box.appendChild(this.notice('alert-warn',
         'A new kernel is installed.',
         `Reboot to start using ${boot.kernel.installed} (running ${boot.kernel.running}).`,

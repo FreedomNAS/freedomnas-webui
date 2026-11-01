@@ -17,6 +17,22 @@ async function loadRollback() {
   try { d = await apiJSON('GET', '/api/system/boot'); } catch { return; }
   const r = d.rollback;
   if (!r) { banner.hidden = true; return; }
+  if (r.failed_system) {
+    document.getElementById('rollback-text').textContent =
+      `On ${formatStamp(r.date)} the system was updated into ${r.failed_system}, which did not finish starting, ` +
+      `so FreedomNAS went back to ${r.restored_system || 'the system from before'}, as it was before the update. ` +
+      `Your data pools were not touched. The failed copy is kept until you delete it.`;
+    const del = document.getElementById('btn-rollback-destroy');
+    del.hidden = false;
+    banner.hidden = false;
+    del.onclick = async () => {
+      if (!await confirm('Delete the failed system',
+          `${r.failed_system} will be destroyed. The running system is not touched.`, 'Delete')) return;
+      await forgetRollback(true);
+    };
+    document.getElementById('btn-rollback-dismiss').onclick = () => forgetRollback(false);
+    return;
+  }
   const restored = r.system_restored
     ? ` The system files were restored from the snapshot taken before the update${r.failed_dataset ? `; the failed system is kept as ${r.failed_dataset}` : ''}.`
     : ' The system files were left as they were.';
