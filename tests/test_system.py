@@ -147,7 +147,7 @@ def test_an_import_is_saved_then_applied(client, engine, config):
     exported["system"]["hostname"] = "restored"
     r = client.post("/api/system/config", raw=yaml.safe_dump(exported).encode())
     assert r.status == 200
-    assert set(r.body) == {"mirrored_to", "applied", "skipped", "failed"}
+    assert set(r.body) == {"mirrored_to", "applied", "skipped", "failed", "warnings"}
     assert r.body["failed"] == []
     assert config.get_hostname() == "restored"
     assert yaml.safe_load(config.config_path.read_text())["system"]["hostname"] == "restored"

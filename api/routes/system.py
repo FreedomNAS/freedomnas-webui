@@ -409,4 +409,6 @@ async def import_config(request: Request, username: str = Depends(authenticate))
         "skipped": [r.action for r in results if r.target_state == "skipped"],
         "failed": [{"action": r.action, "error": r.error}
                    for r in results if r.target_state == "failed"],
+        "warnings": [{"action": r.action, "error": r.error}
+                     for r in results if r.target_state == "warning"],
     }
