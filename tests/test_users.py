@@ -229,3 +229,43 @@ def test_the_last_administrator_keeps_the_role(client, engine, config):
 def test_the_role_of_an_unknown_user_is_not_found(client, engine, config):
     r = client.post("/api/users/nobody/admin", {"admin": True})
     assert r.status == 404
+
+
+def test_nobody_deletes_their_own_account(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    r = client.delete("/api/users/admin")
+    assert r.status == 422 and "your own account" in r.body["detail"]
+    assert engine.called("users", "delete") == []
+    assert config.get_user("admin") is not None
+
+
+def test_root_is_never_deleted(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    r = client.delete("/api/users/root")
+    assert r.status == 422 and "root" in r.body["detail"]
+    assert engine.called("users", "delete") == []
+    assert engine.called("samba", "delete_user") == []
+
+
+def test_the_last_administrator_is_never_deleted(client, engine, config):
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    r = client.delete("/api/users/carla")
+    assert r.status == 422 and "last administrator" in r.body["detail"]
+    assert engine.called("users", "delete") == []
+    assert config.get_user("carla") is not None
+
+
+def test_an_administrator_is_deleted_while_another_one_is_left(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    config.add_user({"username": "carla", "groups": [], "admin": True})
+    assert client.delete("/api/users/carla").status == 200
+    assert engine.called("users", "delete")
+    assert config.get_user("carla") is None
+
+
+def test_an_ordinary_user_is_deleted(client, engine, config):
+    config.add_user({"username": "admin", "groups": [], "admin": True})
+    config.add_user({"username": "mario", "groups": []})
+    assert client.delete("/api/users/mario").status == 200
+    assert config.get_user("mario") is None

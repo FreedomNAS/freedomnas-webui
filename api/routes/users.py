@@ -14,6 +14,8 @@ same password goes into its own database too, so the account can open
 shares.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
@@ -238,6 +240,19 @@ async def set_user_password(target: str, body: dict, username: str = Depends(aut
     return {"detail": f"Password updated for {target}"}
 
 
+def _keeps_an_administrator(config, target: str, username: str, own: str) -> Optional[JSONResponse]:
+    """The refusal when taking target's role or account would leave the caller or the NAS without one."""
+    if target == username:
+        return JSONResponse(status_code=422, content={
+            "detail": f"You cannot {own}: another administrator has to"})
+    user = config.get_user(target) or {}
+    others = [u for u in config.get_users() if u.get("admin") and u.get("username") != target]
+    if user.get("admin") and not others:
+        return JSONResponse(status_code=422, content={
+            "detail": f"{target} is the last administrator: make someone else one first"})
+    return None
+
+
 @router.post("/{target}/admin")
 async def set_user_admin(target: str, body: dict, username: str = Depends(authenticate)):
     """
@@ -256,13 +271,9 @@ async def set_user_admin(target: str, body: dict, username: str = Depends(authen
     if bool(user.get("admin")) == want:
         return {"username": target, "admin": want}
     if not want:
-        if target == username:
-            return JSONResponse(status_code=422, content={
-                "detail": "You cannot take your own administrator role: another administrator has to"})
-        others = [u for u in config.get_users() if u.get("admin") and u.get("username") != target]
-        if not others:
-            return JSONResponse(status_code=422, content={
-                "detail": f"{target} is the last administrator: make someone else one first"})
+        refused = _keeps_an_administrator(config, target, username, "take your own administrator role")
+        if refused:
+            return refused
     sudo_group = engine.get_profile_value("users", "sudo_group")
     groups = [sudo_group] + [g for g in admin_groups_present(engine) if g != sudo_group]
     try:
@@ -284,6 +295,11 @@ async def set_user_admin(target: str, body: dict, username: str = Depends(authen
 async def delete_user(target: str, username: str = Depends(authenticate)):
     engine = get_engine()
     config = get_config()
+    if target == "root":
+        return JSONResponse(status_code=422, content={"detail": "root cannot be deleted"})
+    refused = _keeps_an_administrator(config, target, username, "delete your own account")
+    if refused:
+        return refused
     try:
         _delete_samba_user(engine, target)
         engine.execute("users", "delete", username=target)
