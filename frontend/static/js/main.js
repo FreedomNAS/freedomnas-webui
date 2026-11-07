@@ -486,3 +486,19 @@ function setLoading(btn, loading, label) {
     btn.disabled = false;
   }
 }
+
+async function showFailedModules(id) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  let d;
+  try { d = await apiJSON('GET', '/api/plugins/failed'); } catch { return; }
+  box.replaceChildren();
+  for (const m of d.failed || []) {
+    const line = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = `The module ${m.id} was not loaded: `;
+    line.append(name, document.createTextNode(m.reason));
+    box.append(line);
+  }
+  box.hidden = !box.children.length;
+}

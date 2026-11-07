@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (_removing) startJob('DELETE', `/api/plugins/${encodeURIComponent(_removing)}`);
   });
   loadPlugins(true);
+  showFailedModules('failed-modules');
 });
 
 async function loadPlugins(attachJob = false) {

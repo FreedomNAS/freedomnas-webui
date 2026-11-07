@@ -2,7 +2,7 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!initShared()) return;
-  await Promise.all([loadSystemInfo(), loadUpdateStatus(), loadModuleHealth(), loadRollback()]);
+  await Promise.all([loadSystemInfo(), loadUpdateStatus(), loadModuleHealth(), loadRollback(), showFailedModules('failed-modules')]);
 });
 
 function formatStamp(stamp) {

@@ -8,6 +8,7 @@ list them as name<TAB>version<TAB>description lines, so nothing here knows
 which package manager runs underneath.
 
 GET    /                — the modules offered and installed, the running job
+GET    /failed          — the community modules the WebUI could not load at start, with the reason
 GET    /job?since=N     — the job's output lines from line N on
 POST   /refresh         — refresh the package index (a job)
 POST   /{id}/install    — install the module's package (a job)
@@ -32,6 +33,7 @@ from fastapi.responses import JSONResponse
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from api import restart
 from api.deps import authenticate, get_engine
+from api import module_discovery
 from api.module_discovery import _default_modules_dir
 
 router = APIRouter()
@@ -201,6 +203,11 @@ async def plugins(username: str = Depends(authenticate)):
     result["job"] = job_state(len(_output) + _dropped)
     result["restart_needed"] = await asyncio.to_thread(restart.restart_needed)
     return result
+
+
+@router.get("/failed")
+async def failed(username: str = Depends(authenticate)):
+    return {"failed": [{"id": m.id, "reason": m.reason} for m in module_discovery.failed_modules]}
 
 
 @router.get("/job")
