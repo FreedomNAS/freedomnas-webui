@@ -121,7 +121,8 @@ def _module_health() -> list:
     the configuration.
     """
     report = []
-    for manifest, module in ModuleLoader(get_engine(), get_config()).instances():
+    loader = ModuleLoader(get_engine(), get_config())
+    for manifest, module in loader.instances():
         entry = {"id": manifest.get("id", module.name), "name": manifest.get("name", module.name)}
         try:
             module.start()
@@ -130,6 +131,8 @@ def _module_health() -> list:
         except Exception as exc:
             entry.update(state="error", detail=str(exc))
         report.append(entry)
+    for module_id, reason in sorted(loader.failed.items()):
+        report.append({"id": module_id, "name": module_id, "state": "failed", "detail": reason})
     return report
 
 

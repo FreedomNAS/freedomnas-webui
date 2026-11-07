@@ -104,8 +104,8 @@ async function loadModuleHealth() {
 }
 
 function healthCard(m) {
-  const dotClass = m.state === 'healthy' ? 'ok' : m.state === 'unhealthy' ? 'err' : 'stopped';
-  const label    = m.state === 'healthy' ? 'Healthy' : m.state === 'unhealthy' ? 'Problem' : 'Error';
+  const dotClass = m.state === 'healthy' ? 'ok' : ['unhealthy', 'failed'].includes(m.state) ? 'err' : 'stopped';
+  const label    = { healthy: 'Healthy', unhealthy: 'Problem', failed: 'Not loaded' }[m.state] || 'Error';
   const page     = MODULE_PAGES[m.id];
   const body = `
       <div class="health-name">${esc(m.name)}</div>

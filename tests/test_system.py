@@ -388,3 +388,20 @@ def test_boot_environments_are_listed_and_refusals_are_422(client, monkeypatch):
     assert r.body == {"supported": True, "environments": envs}
     r = client.delete("/api/system/boot-environments/freebsd")
     assert r.status == 422 and "running now" in r.body["detail"]
+
+
+def test_a_module_that_cannot_be_loaded_is_reported_next_to_the_others(client, engine, config, monkeypatch, tmp_path):
+    from conftest import CORE
+    from freedomnas.module_loader import ModuleLoader
+    community = tmp_path / "community"
+    (community / "broken").mkdir(parents=True)
+    (community / "broken" / "manifest.json").write_text('{"id": "broken", "entry_point": "module:M"}')
+    (community / "broken" / "module.py").write_text("def broken(:\n")
+    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dirs",
+                        staticmethod(lambda: [CORE / "modules", community]))
+    r = client.get("/api/system/health")
+    assert r.status == 200
+    report = {m["id"]: m for m in r.body["modules"]}
+    assert report["broken"]["state"] == "failed"
+    assert "SyntaxError" in report["broken"]["detail"]
+    assert {"network", "shares", "storage", "updates", "users"} <= set(report)
