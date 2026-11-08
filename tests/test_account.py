@@ -118,6 +118,24 @@ def test_a_module_that_fails_leaves_the_others_links(client, modules):
     assert [l["name"] for l in client.get("/api/account/me").body["links"]] == ["site"]
 
 
+def test_a_module_that_does_not_answer_in_time_leaves_the_others_links(client, modules, monkeypatch):
+    import threading
+    import api.routes.account as account
+    monkeypatch.setattr(account.orchestrator, "CHECK_TIMEOUT", 0.1)
+    release = threading.Event()
+
+    class Slow(LinkModule):
+        def links(self):
+            release.wait(5)
+            return [{"name": "late", "scheme": "https", "port": 9999}]
+    modules.append(({"id": "slow"}, Slow("slow", [])))
+    modules.append(({"id": "proxy"}, LinkModule("proxy", [{"name": "site", "scheme": "https", "port": 8443}])))
+    try:
+        assert [l["name"] for l in client.get("/api/account/me").body["links"]] == ["site"]
+    finally:
+        release.set()
+
+
 def test_a_temporary_password_opens_nothing_but_its_change(client, config, mario, modules):
     config.add_user({"username": "mario", "temporary_password": True})
     EXPIRED.add("mario")

@@ -3,8 +3,9 @@
 
 GET  /me       — the signed-in account: its groups, whether it administers
                  the NAS, the shares it may use, the web pages of the NAS
-                 (modules' links()) and the certificate authority's
-                 fingerprint, for the account page.
+                 (modules' links(), asked of all modules at once; one that
+                 has not answered within 5 s is left out) and the
+                 certificate authority's fingerprint, for the account page.
 POST /password — {username, password, new_password}: change one's own
                  password, for the system and Samba at once. The current
                  password may be a temporary one that has expired (given
@@ -14,11 +15,13 @@ POST /password — {username, password, new_password}: change one's own
 
 import asyncio
 import logging
+import threading
+import time
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from freedomnas import tls
+from freedomnas import orchestrator, tls
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
@@ -54,6 +57,15 @@ def _nfs_shares(config, username: str) -> list:
             for s in config.get_nfs_shares() if s.get("owner") == username]
 
 
+def _module_links(manifest: dict, module) -> list:
+    try:
+        module.start()
+        return module.links()
+    except Exception as exc:
+        logger.warning("Module %s gave no links: %s", manifest.get("id", module.name), exc)
+        return []
+
+
 def _links() -> list:
     joined = {}
     try:
@@ -61,14 +73,25 @@ def _links() -> list:
     except ModuleLoaderException as exc:
         logger.warning("Cannot load the modules: %s", exc)
         return []
-    for manifest, module in modules:
-        try:
-            module.start()
-            entries = module.links()
-        except Exception as exc:
-            logger.warning("Module %s gave no links: %s", manifest.get("id", module.name), exc)
-            continue
-        for link in entries:
+    found: dict = {}
+
+    def ask(index, manifest, module):
+        found[index] = _module_links(manifest, module)
+
+    workers = []
+    for index, (manifest, module) in enumerate(modules):
+        worker = threading.Thread(target=ask, args=(index, manifest, module),
+                                  name=f"fnas-links-{manifest.get('id', module.name)}", daemon=True)
+        worker.start()
+        workers.append((manifest, module, worker))
+    deadline = time.monotonic() + orchestrator.CHECK_TIMEOUT
+    for manifest, module, worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+        if worker.is_alive():
+            logger.warning("Module %s gave no links within %s s", manifest.get("id", module.name),
+                           orchestrator.CHECK_TIMEOUT)
+    for index in range(len(workers)):
+        for link in found.get(index) or []:
             name = str(link.get("name") or "")
             if name:
                 joined.setdefault(name, {}).update({k: v for k, v in link.items()
