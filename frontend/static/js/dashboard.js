@@ -91,22 +91,58 @@ const MODULE_PAGES = {
   users: '/users/', updates: '/updates/',
 };
 
+const HEALTH_LOOK = {
+  healthy:  ['ok', 'Healthy'],
+  problem:  ['warn', 'Problem'],
+  starting: ['stopped', 'Starting'],
+  retrying: ['warn', 'Retrying'],
+  blocked:  ['err', 'Blocked'],
+  failed:   ['err', 'Not loaded'],
+};
+
+let healthTimer = null;
+
 async function loadModuleHealth() {
   const grid = document.getElementById('health-grid');
   if (!grid) return;
 
   try {
     const d = await apiJSON('GET', '/api/system/health');
-    grid.innerHTML = (d.modules || []).map(healthCard).join('');
+    const monitor = d.monitor || {};
+    const notice = monitor.running ? '' : `
+      <div class="health-item" style="grid-column:1/-1;border-color:var(--warn)">
+        <div class="health-name">Module checks are not running</div>
+        <div class="text-sm text-muted">${monitor.updated_at
+          ? `Last state known from ${esc(new Date(monitor.updated_at).toLocaleString())}.`
+          : 'No module has been checked since the system started.'}</div>
+      </div>`;
+    grid.innerHTML = notice + (d.modules || []).map(healthCard).join('');
+    grid.querySelectorAll('[data-restart]').forEach((btn) => {
+      btn.addEventListener('click', () => restartModule(btn));
+    });
   } catch (e) {
     grid.innerHTML = `<div class="text-sm text-muted">Module health unavailable: ${esc(e.message)}</div>`;
+  }
+  clearTimeout(healthTimer);
+  healthTimer = setTimeout(loadModuleHealth, 15000);
+}
+
+async function restartModule(btn) {
+  btn.disabled = true;
+  try {
+    await apiJSON('POST', `/api/system/modules/${encodeURIComponent(btn.dataset.restart)}/restart`, {});
+    btn.textContent = 'Restart asked…';
+    setTimeout(loadModuleHealth, 3000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = `Restart failed: ${e.message}`;
   }
 }
 
 function healthCard(m) {
-  const dotClass = m.state === 'healthy' ? 'ok' : ['unhealthy', 'failed'].includes(m.state) ? 'err' : 'stopped';
-  const label    = { healthy: 'Healthy', unhealthy: 'Problem', failed: 'Not loaded' }[m.state] || 'Error';
-  const page     = MODULE_PAGES[m.id];
+  const [dotClass, word] = HEALTH_LOOK[m.state] || ['err', 'Error'];
+  const label = m.state === 'retrying' && m.attempt ? `${word} ${m.attempt}/${m.attempts}` : word;
+  const page  = MODULE_PAGES[m.id];
   const body = `
       <div class="health-name">${esc(m.name)}</div>
       <div class="health-state">
@@ -114,6 +150,10 @@ function healthCard(m) {
         <span class="health-state-text">${label}</span>
       </div>
       ${m.detail ? `<div class="text-sm text-muted">${esc(m.detail)}</div>` : ''}`;
+  if (m.state === 'blocked') {
+    return `<div class="health-item">${body}
+      <div style="margin-top:8px"><button class="btn btn-secondary btn-sm" data-restart="${esc(m.id)}">Restart module</button></div></div>`;
+  }
   return page
     ? `<a class="health-item" href="${page}">${body}</a>`
     : `<div class="health-item">${body}</div>`;

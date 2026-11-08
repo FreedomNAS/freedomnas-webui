@@ -1,5 +1,6 @@
 """/api/system/* — identity, power, and the configuration export/import."""
 
+import json
 import pytest
 import yaml
 
@@ -189,33 +190,56 @@ def test_ssh_wants_a_boolean(client, engine, value):
 
 
 @pytest.fixture
-def core_modules(monkeypatch):
-    from conftest import CORE
-    from freedomnas.module_loader import ModuleLoader
-    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dirs",
-                        staticmethod(lambda: [CORE / "modules"]))
+def run_dir(monkeypatch, tmp_path):
+    from api.routes import system
+    folder = tmp_path / "run"
+    folder.mkdir()
+    monkeypatch.setattr(system, "_run_dir", lambda: folder)
+    return folder
 
 
-def test_health_asks_every_module(client, engine, config, core_modules):
-    engine.outputs[("zfs", "pool_list")] = "tank\t1\t1\t1\t1\tDEGRADED\n"
-    engine.outputs[("network", "list_interfaces")] = (
-        '[{"ifname": "lo", "operstate": "UNKNOWN"}, {"ifname": "eth0", "operstate": "UP"}]')
+def write_health(folder, modules, age=0):
+    from datetime import datetime, timedelta, timezone
+    updated = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(timespec="seconds")
+    (folder / "module-health.json").write_text(json.dumps({"updated_at": updated, "modules": modules}))
+    return updated
+
+
+STORAGE = {"id": "storage", "name": "Storage", "state": "problem", "detail": "tank is DEGRADED"}
+BLOCKED = {"id": "proxy", "name": "Reverse proxy", "state": "blocked", "detail": "RuntimeError: boom"}
+
+
+def test_health_is_what_serve_last_wrote(client, engine, config, run_dir):
+    updated = write_health(run_dir, [STORAGE, BLOCKED])
     r = client.get("/api/system/health")
     assert r.status == 200
-    report = {m["id"]: (m["state"], m["detail"]) for m in r.body["modules"]}
-    assert report["storage"] == ("unhealthy", "tank is DEGRADED")
-    assert report["network"] == ("healthy", "eth0 up")
-    assert report["shares"] == ("healthy", "no shares, no share services enabled")
-    assert report["updates"][0] == "healthy"
-    assert set(report) == {"network", "shares", "storage", "updates", "users"}
+    assert r.body == {"modules": [STORAGE, BLOCKED], "monitor": {"running": True, "updated_at": updated}}
 
 
-def test_a_module_that_breaks_is_reported_not_raised(client, engine, config, core_modules):
-    engine.outputs[("zfs", "pool_list")] = RuntimeError("zpool exploded")
+def test_an_old_file_says_the_checks_are_not_running_and_keeps_the_last_state(client, engine, config, run_dir):
+    updated = write_health(run_dir, [STORAGE], age=600)
     r = client.get("/api/system/health")
-    assert r.status == 200
-    [storage] = [m for m in r.body["modules"] if m["id"] == "storage"]
-    assert storage == {"id": "storage", "name": "Storage", "state": "error", "detail": "zpool exploded"}
+    assert r.body == {"modules": [STORAGE], "monitor": {"running": False, "updated_at": updated}}
+
+
+def test_no_file_at_all_is_not_running_either(client, engine, config, run_dir):
+    r = client.get("/api/system/health")
+    assert r.body == {"modules": [], "monitor": {"running": False, "updated_at": None}}
+
+
+def test_a_restart_leaves_a_request_for_serve(client, engine, config, run_dir):
+    write_health(run_dir, [STORAGE, BLOCKED])
+    r = client.post("/api/system/modules/proxy/restart", {})
+    assert r.status == 200 and r.body == {"requested": "proxy"}
+    assert (run_dir / "module-restart" / "proxy").exists()
+
+
+def test_a_restart_of_a_module_serve_does_not_know_is_refused(client, engine, config, run_dir):
+    write_health(run_dir, [STORAGE])
+    r = client.post("/api/system/modules/..%2Fetc/restart", {})
+    assert r.status == 404
+    r = client.post("/api/system/modules/nonexistent/restart", {})
+    assert r.status == 404 and not (run_dir / "module-restart").exists()
 
 
 ROLLED_BACK = """autorollback: yes
@@ -388,20 +412,3 @@ def test_boot_environments_are_listed_and_refusals_are_422(client, monkeypatch):
     assert r.body == {"supported": True, "environments": envs}
     r = client.delete("/api/system/boot-environments/freebsd")
     assert r.status == 422 and "running now" in r.body["detail"]
-
-
-def test_a_module_that_cannot_be_loaded_is_reported_next_to_the_others(client, engine, config, monkeypatch, tmp_path):
-    from conftest import CORE
-    from freedomnas.module_loader import ModuleLoader
-    community = tmp_path / "community"
-    (community / "broken").mkdir(parents=True)
-    (community / "broken" / "manifest.json").write_text('{"id": "broken", "entry_point": "module:M"}')
-    (community / "broken" / "module.py").write_text("def broken(:\n")
-    monkeypatch.setattr(ModuleLoader, "_get_default_modules_dirs",
-                        staticmethod(lambda: [CORE / "modules", community]))
-    r = client.get("/api/system/health")
-    assert r.status == 200
-    report = {m["id"]: m for m in r.body["modules"]}
-    assert report["broken"]["state"] == "failed"
-    assert "SyntaxError" in report["broken"]["detail"]
-    assert {"network", "shares", "storage", "updates", "users"} <= set(report)

@@ -4,7 +4,10 @@
 GET  /status   — health check (no auth, always accessible)
 GET  /info     — hostname, timezone, uptime, and what the documentation needs
                  to match this system: version, init system, firmware
-GET  /health   — each FreedomNAS module's health, and why
+GET  /health   — each FreedomNAS module's health, and why, as `freedomnas
+                 serve` last wrote it; monitor.running is false when it has
+                 not written for HEALTH_STALE seconds
+POST /modules/{id}/restart — check a module again at once, a blocked one too
 POST /hostname — set hostname
 POST /timezone — set timezone
 GET  /ssh      — whether SSH is enabled
@@ -32,8 +35,10 @@ POST /config   — load a configuration back and apply it
 """
 
 import asyncio
+import json
 import re
 import zoneinfo
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -43,8 +48,7 @@ from fastapi.responses import JSONResponse, Response
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
 from freedomnas.config import ConfigurationException
 from freedomnas.reconcile import ReconciliationEngine
-from freedomnas.module_loader import ModuleLoader, ModuleLoaderException
-from freedomnas import bootenv, bootstate, replication, shadow, tls
+from freedomnas import bootenv, bootstate, orchestrator, paths, replication, shadow, tls
 from api import restart
 from api.deps import authenticate, get_config, get_engine
 from api.routes import plugins
@@ -113,36 +117,48 @@ async def info(username: str = Depends(authenticate)):
     }
 
 
-def _module_health() -> list:
+HEALTH_STALE = 90
+
+
+def _run_dir() -> Path:
+    return paths.run_dir(get_engine())
+
+
+def _read_health() -> dict:
     """
-    Ask every module this edition supports how it is doing. Nothing keeps
-    the modules running between requests — no orchestrator runs on an
-    appliance — so each is started, asked and forgotten; start() only reads
-    the configuration.
+    The modules' health as `freedomnas serve` wrote it. The WebUI checks
+    nothing itself: when serve has stopped, the last state it wrote is shown
+    with its time, and monitor.running says it is old.
     """
-    report = []
-    loader = ModuleLoader(get_engine(), get_config())
-    for manifest, module in loader.instances():
-        entry = {"id": manifest.get("id", module.name), "name": manifest.get("name", module.name)}
-        try:
-            module.start()
-            healthy, detail = module.health()
-            entry.update(state="healthy" if healthy else "unhealthy", detail=detail)
-        except Exception as exc:
-            entry.update(state="error", detail=str(exc))
-        report.append(entry)
-    for module_id, reason in sorted(loader.failed.items()):
-        report.append({"id": module_id, "name": module_id, "state": "failed", "detail": reason})
-    return report
+    try:
+        data = json.loads((_run_dir() / orchestrator.HEALTH_FILE).read_text())
+    except (OSError, ValueError, KeyError):
+        return {"modules": [], "monitor": {"running": False, "updated_at": None}}
+    updated = data.get("updated_at")
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated)).total_seconds()
+    except (TypeError, ValueError):
+        age = None
+    return {"modules": data.get("modules") or [],
+            "monitor": {"running": age is not None and age <= HEALTH_STALE, "updated_at": updated}}
 
 
 @router.get("/health")
 async def health(username: str = Depends(authenticate)):
+    return _read_health()
+
+
+@router.post("/modules/{module_id}/restart")
+async def restart_module(module_id: str, username: str = Depends(authenticate)):
+    if module_id not in {m.get("id") for m in _read_health()["modules"]}:
+        return JSONResponse(status_code=404, content={"detail": f"No module {module_id}"})
+    folder = _run_dir() / orchestrator.RESTART_DIR
     try:
-        modules = await asyncio.to_thread(_module_health)
-    except ModuleLoaderException as exc:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / module_id).touch()
+    except OSError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    return {"modules": modules}
+    return {"requested": module_id}
 
 
 @router.post("/hostname")
