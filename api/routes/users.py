@@ -90,13 +90,16 @@ def _delete_samba_user(engine, target: str) -> None:
 
 @router.get("/")
 async def list_users(username: str = Depends(authenticate)):
-    config = get_config()
-    sudo_group = get_engine().get_profile_value("users", "sudo_group")
-    users = []
+    config, engine = get_config(), get_engine()
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    users, with_role = [], None
     for user in config.get_users():
         groups = list(user.get("groups") or [])
-        if user.get("admin") and sudo_group and sudo_group not in groups:
-            groups.insert(0, sudo_group)
+        if user.get("admin"):
+            if with_role is None:
+                with_role = ([sudo_group] if sudo_group else []) + [
+                    g for g in admin_groups_present(engine) if g != sudo_group]
+            groups = with_role + [g for g in groups if g not in with_role]
         users.append({**user, "groups": groups})
     return {"users": users}
 

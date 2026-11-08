@@ -177,7 +177,7 @@ def test_an_administrator_joins_the_admin_groups_this_system_has(client, engine,
     [create] = engine.called("users", "create")
     assert create.argv == ["useradd", "-m", "-s", "/bin/bash", "-G", "sudo,docker", "carla"]
     carla = next(u for u in config.get_users() if u["username"] == "carla")
-    assert (carla["groups"], carla["admin"]) == (["docker"], True)
+    assert (carla["groups"], carla["admin"]) == ([], True)
     listed = next(u for u in client.get("/api/users/").body["users"] if u["username"] == "carla")
     assert listed["groups"] == ["sudo", "docker"]
 

@@ -345,7 +345,7 @@ def test_the_administrator_joins_the_admin_groups_this_system_has(admin, engine,
     [joined] = engine.called("users", "add_to_group")
     assert joined.kwargs == {"username": "admin", "group": "docker"}
     entry = next(u for u in fresh_config.get_users() if u["username"] == "admin")
-    assert (entry["groups"], entry["admin"]) == (["docker"], True)
+    assert (entry["groups"], entry["admin"]) == ([], True)
 
 
 def test_a_restore_needs_a_temporary_password_for_every_restored_account(restored, engine, setup_pending_file):
