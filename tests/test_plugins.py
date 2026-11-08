@@ -50,7 +50,8 @@ def launched(monkeypatch):
 
 
 def test_the_listing_lines_become_modules():
-    found = plugins.parse(SEARCH + "app-nas/freedomnas-module-media\t9999\tMedia\n")
+    from freedomnas.package_manager import parse_module_packages
+    found = parse_module_packages(SEARCH + "app-nas/freedomnas-module-media\t9999\tMedia\n")
     assert set(found) == {"containers", "photos", "media"}
     assert found["photos"]["description"] == "Photos: albums, faces\tand tabs"
     assert found["media"]["package"] == "app-nas/freedomnas-module-media"

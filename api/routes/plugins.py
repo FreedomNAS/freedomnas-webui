@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from freedomnas.engine import CommandExecutionError, CommandTranslationError
+from freedomnas.package_manager import module_package_entries
 from api import restart
 from api.deps import authenticate, get_engine
 from api import module_discovery
@@ -38,7 +39,6 @@ from api.module_discovery import _default_modules_dir
 
 router = APIRouter()
 
-PACKAGE = re.compile(r"(?:[a-z0-9][a-z0-9+_.-]*/)?freedomnas-module-([a-z0-9][a-z0-9_-]{0,62})")
 MODULE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 OUTPUT_LINES = 2000
 
@@ -76,26 +76,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def parse(text: str) -> dict:
-    found = {}
-    for line in text.splitlines():
-        fields = line.split("\t", 2)
-        if len(fields) < 2:
-            continue
-        match = PACKAGE.fullmatch(fields[0].strip())
-        if not match:
-            continue
-        found[match.group(1)] = {
-            "package": fields[0].strip(),
-            "version": fields[1].strip(),
-            "description": fields[2].strip() if len(fields) > 2 else "",
-        }
-    return found
-
-
 def _list(engine, action: str) -> dict:
-    stdout, _ = engine.execute("packages", action, timeout=300, check=False)
-    return parse(stdout)
+    return module_package_entries(engine, action)
 
 
 def catalogue(engine) -> dict:
