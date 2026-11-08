@@ -112,10 +112,14 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
     if problem:
         return JSONResponse(status_code=422, content={"detail": problem})
 
+    groups = body.get("groups", [])
+    refused = _reserved_groups_refused(get_engine(), groups)
+    if refused:
+        return refused
     try:
         create_account(
             get_engine(), get_config(), new_user, password,
-            groups=body.get("groups", []),
+            groups=groups,
             shell=body.get("shell", "/bin/bash"),
             uid=body.get("uid"),
             gid=body.get("gid"),
@@ -123,6 +127,25 @@ async def create_user(body: dict, username: str = Depends(authenticate)):
     except (CommandExecutionError, CommandTranslationError, ConfigurationException) as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
     return {"username": new_user}
+
+
+def _reserved_groups_refused(engine, groups) -> Optional[JSONResponse]:
+    """
+    The groups administrators get (docker, libvirt: each gives root's power)
+    come only with the administrators' group, never on their own.
+    """
+    if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+        return JSONResponse(status_code=422, content={"detail": "groups must be a list of names"})
+    sudo_group = engine.get_profile_value("users", "sudo_group")
+    if sudo_group in groups:
+        return None
+    reserved = [g for g in admin_groups_present(engine) if g in groups and g != sudo_group]
+    if reserved:
+        return JSONResponse(status_code=422, content={
+            "detail": f"{', '.join(reserved)}: only administrators may be in "
+                      f"{'this group' if len(reserved) == 1 else 'these groups'}; "
+                      f"make the account an administrator instead"})
+    return None
 
 
 def password_problem(username: str, password: str) -> str:

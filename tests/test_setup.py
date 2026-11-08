@@ -70,6 +70,7 @@ def test_initialize_sets_up_the_system_and_marks_it(admin, engine, fresh_config,
         ("samba", "check_installed"),
         ("samba", "set_user_password"),
         ("users", "group_exists"),
+        ("users", "group_exists"),
         ("users", "get_user_info"),
     ]
     [password] = engine.called("users", "set_password_stdin")
