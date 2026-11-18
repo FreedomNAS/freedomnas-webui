@@ -1,3 +1,17 @@
+freedomnas-webui (0.9.20-1) unstable; urgency=medium
+
+  * Plugins page; community modules in the sidebar, their health, checks
+    and restart
+  * Group shares on the Shares page
+  * Snapshot schedules on the Snapshots tab, at every level
+  * Account page, temporary passwords changed at sign-in, administrator
+    role given or taken, unsafe account deletions refused
+  * Restore page while a restore runs
+  * Certificate authority download; plain HTTP sent to HTTPS
+  * FreeBSD updates in boot environments; restart and reboot notices
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Wed, 18 Nov 2026 17:28:25 +0000
+
 freedomnas-webui (0.9.12-1) unstable; urgency=medium
 
   * UKI backed up right after the pre-update snapshot
