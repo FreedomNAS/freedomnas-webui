@@ -9,9 +9,9 @@ name: notify-deb-repo
 # freedomnas-deb/docs/ci-setup.md for how to generate and rotate
 # DEB_REPO_TRIGGER_TOKEN, which has to be set as a secret on this repo
 # before this workflow can succeed.
+# Switched off: freedomnas-deb is built on GitHub (notify-packages.yml).
 on:
-  push:
-    branches: [main, dev]
+  workflow_dispatch:
 
 jobs:
   notify:
