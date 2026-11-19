@@ -1,3 +1,9 @@
+freedomnas-webui (0.9.21-1) unstable; urgency=medium
+
+  * Links and tests moved to GitHub
+
+ -- FreedomNAS Team <dev@freedomnas.io>  Thu, 19 Nov 2026 04:00:00 +0000
+
 freedomnas-webui (0.9.20-1) unstable; urgency=medium
 
   * Plugins page; community modules in the sidebar, their health, checks
