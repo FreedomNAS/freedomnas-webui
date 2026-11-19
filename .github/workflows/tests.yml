@@ -41,7 +41,7 @@ jobs:
         run: |
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --quiet -r requirements.txt \
-            cryptography pytest websockets
+            cryptography pytest websockets httpx
 
       - name: Test
         run: /tmp/venv/bin/python -m pytest tests/ -q
