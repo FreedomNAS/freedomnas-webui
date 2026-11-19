@@ -4,9 +4,9 @@ Priority: optional
 Maintainer: FreedomNAS Team <dev@freedomnas.io>
 Standards-Version: 4.6.2
 Build-Depends: debhelper-compat (= 13)
-Homepage: https://codeberg.org/FreedomNAS/freedomnas-webui
-Vcs-Browser: https://codeberg.org/FreedomNAS/freedomnas-webui
-Vcs-Git: https://codeberg.org/FreedomNAS/freedomnas-webui.git
+Homepage: https://github.com/FreedomNAS/freedomnas-webui
+Vcs-Browser: https://github.com/FreedomNAS/freedomnas-webui
+Vcs-Git: https://github.com/FreedomNAS/freedomnas-webui.git
 
 Package: freedomnas-webui
 Architecture: all
