@@ -1,3 +1,4 @@
+# Switched off: notify-image-builder runs on GitHub.
 name: notify-image-builder
 
 # On every push to main, ask freedomnas-image-builder to rebuild its
@@ -9,8 +10,7 @@ name: notify-image-builder
 # how to generate/rotate IMAGE_BUILDER_TRIGGER_TOKEN (must be set as a
 # secret on this repo before this workflow can succeed).
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   notify:
